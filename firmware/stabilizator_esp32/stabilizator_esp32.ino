@@ -66,7 +66,7 @@
 // --- MQTT broker = the Raspberry Pi on the LAN ---
 // Find the Pi address with `hostname -I`; ideally give the Pi a DHCP
 // reservation so this never changes.
-#define MQTT_HOST    "192.168.1.50"
+#define MQTT_HOST    "192.168.1.10"
 #define MQTT_PORT    1883
 
 // --- Regulation ---
