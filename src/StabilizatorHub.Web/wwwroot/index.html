@@ -86,7 +86,10 @@
         <div class="card">
           <div class="card-head">
             <h2 id="device-name">Device</h2>
-            <span id="device-online" class="pill offline">offline</span>
+            <span style="display:inline-flex; gap:6px">
+              <span id="device-role" class="pill neutral">member</span>
+              <span id="device-online" class="pill offline">offline</span>
+            </span>
           </div>
 
           <div style="display:flex; align-items:center; gap:14px; margin:14px 0">
@@ -106,9 +109,23 @@
             <span>Last seen: <b id="device-last-seen">--</b></span>
           </div>
 
-          <div style="display:flex; gap:10px; margin-top:16px">
+          <div id="owner-actions" style="display:flex; flex-wrap:wrap; gap:10px; margin-top:16px">
+            <button id="btn-invite" class="btn small" type="button" title="Generate a code so household members can join">Invite member</button>
+            <button id="btn-members" class="btn small" type="button">Members</button>
             <button id="btn-rename" class="btn small" type="button">Rename</button>
             <button id="btn-release" class="btn small danger" type="button">Unlink device</button>
+          </div>
+          <div id="member-actions" class="hidden" style="margin-top:16px">
+            <button id="btn-leave" class="btn small danger" type="button">Leave device</button>
+          </div>
+
+          <div id="members-area" class="hidden" style="margin-top:14px">
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Email</th><th>Role</th><th>Joined</th><th></th></tr></thead>
+                <tbody id="members-body"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </section>

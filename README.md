@@ -16,7 +16,8 @@ ESP32 ──MQTT──> Mosquitto (Raspberry Pi) ──> Backend ASP.NET Core (.
 ## Funcționalități
 
 - **Telemetrie la 60 s** de la ESP32 (tensiune intrare/ieșire, curent, putere) prin MQTT, afișată **live** în browser prin SignalR.
-- **Conturi de utilizator** (ASP.NET Core Identity) — un cont se poate crea **doar cu codul de împerechere** afișat pe OLED-ul dispozitivului: dovada posesiei fizice. Un dispozitiv revendicat nu mai poate fi atașat altui cont până când proprietarul nu îl eliberează (moment în care firmware-ul generează un **cod nou**).
+- **Conturi de utilizator** (ASP.NET Core Identity) — un cont se poate crea **doar cu un cod valid**: codul de împerechere de pe OLED (dovada posesiei fizice → devii **owner**) sau un **cod de invitație** generat de owner (membrii familiei își fac propriile conturi pe același dispozitiv). Un dispozitiv revendicat nu mai poate fi atașat prin pairing până când owner-ul nu îl eliberează (moment în care firmware-ul generează un **cod nou**).
+- **Acces multi-utilizator pe dispozitiv**: owner-ul invită membrii casei cu un cod valabil 48 h; membrii văd consumul și pot comanda releul; doar owner-ul redenumește, invită, scoate membri sau eliberează dispozitivul.
 - **Monitorizarea consumului** pe ore / zile / săptămâni / luni (agregare SQL pe SQLite), grafice Chart.js + sumar zilnic/săptămânal/lunar.
 - **Evenimente de tensiune**: episoadele de **subtensiune ≤ 215 V** și **supratensiune ≥ 240 V** la intrare sunt detectate (cu histerezis), persistate, notificate live și listate în dashboard.
 - **Control releu (SSR) de la distanță** — pornește/oprește ieșirea stabilizatorului, cu confirmare în UI și starea reală raportată înapoi de dispozitiv.

@@ -3,12 +3,17 @@ using StabilizatorHub.Domain.Entities;
 
 namespace StabilizatorHub.Application.Services;
 
+/// <summary>A device together with the caller's role on it.</summary>
+public sealed record DeviceAccess(Device Device, DeviceRole Role);
+
 /// <summary>
-/// Central ownership check: every device-scoped use case goes through here, so
-/// a user can never read or command somebody else's device. Returns the same
-/// error for "missing" and "not owned" to avoid leaking device existence.
+/// Central access check: every device-scoped use case goes through here, so a
+/// user can never read or command a device they are not a member of. Returns
+/// the same error for "missing" and "no access" to avoid leaking existence.
 /// </summary>
 public interface IDeviceAccessService
 {
-    Task<OperationResult<Device>> GetOwnedDeviceAsync(string userId, string deviceId, CancellationToken ct = default);
+    /// <param name="requireOwner">When true, plain members are rejected (owner-only operations).</param>
+    Task<OperationResult<DeviceAccess>> GetAccessibleDeviceAsync(
+        string userId, string deviceId, bool requireOwner = false, CancellationToken ct = default);
 }

@@ -28,18 +28,21 @@ public sealed class DeviceQueryService : IDeviceQueryService
 
     public async Task<IReadOnlyList<DeviceDto>> GetMineAsync(string userId, CancellationToken ct = default)
     {
-        var devices = await _devices.GetByOwnerAsync(userId, ct);
-        return devices.Select(DeviceDto.FromEntity).ToList();
+        var devices = await _devices.GetForMemberAsync(userId, ct);
+        return devices
+            .OrderBy(d => d.Device.Name)
+            .Select(d => DeviceDto.FromEntity(d.Device, d.Role))
+            .ToList();
     }
 
     public async Task<OperationResult<TelemetryDto?>> GetLatestTelemetryAsync(
         string userId, string deviceId, CancellationToken ct = default)
     {
-        var owned = await _access.GetOwnedDeviceAsync(userId, deviceId, ct);
+        var access = await _access.GetAccessibleDeviceAsync(userId, deviceId, ct: ct);
 
-        if (!owned.Succeeded)
+        if (!access.Succeeded)
         {
-            return OperationResult<TelemetryDto?>.Fail(owned.Error!);
+            return OperationResult<TelemetryDto?>.Fail(access.Error!);
         }
 
         var latest = await _telemetry.GetLatestAsync(deviceId, ct);
@@ -49,11 +52,11 @@ public sealed class DeviceQueryService : IDeviceQueryService
     public async Task<OperationResult<IReadOnlyList<TelemetryDto>>> GetRecentTelemetryAsync(
         string userId, string deviceId, int minutes, CancellationToken ct = default)
     {
-        var owned = await _access.GetOwnedDeviceAsync(userId, deviceId, ct);
+        var access = await _access.GetAccessibleDeviceAsync(userId, deviceId, ct: ct);
 
-        if (!owned.Succeeded)
+        if (!access.Succeeded)
         {
-            return OperationResult<IReadOnlyList<TelemetryDto>>.Fail(owned.Error!);
+            return OperationResult<IReadOnlyList<TelemetryDto>>.Fail(access.Error!);
         }
 
         var sinceUtc = _clock.UtcNow.AddMinutes(-Math.Clamp(minutes, 1, 24 * 60));

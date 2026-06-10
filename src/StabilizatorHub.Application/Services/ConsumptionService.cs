@@ -24,11 +24,11 @@ public sealed class ConsumptionService : IConsumptionService
     public async Task<OperationResult<IReadOnlyList<ConsumptionBucketDto>>> GetHistoryAsync(
         string userId, string deviceId, HistoryRange range, int tzOffsetMinutes, CancellationToken ct = default)
     {
-        var owned = await _access.GetOwnedDeviceAsync(userId, deviceId, ct);
+        var access = await _access.GetAccessibleDeviceAsync(userId, deviceId, ct: ct);
 
-        if (!owned.Succeeded)
+        if (!access.Succeeded)
         {
-            return OperationResult<IReadOnlyList<ConsumptionBucketDto>>.Fail(owned.Error!);
+            return OperationResult<IReadOnlyList<ConsumptionBucketDto>>.Fail(access.Error!);
         }
 
         var tz = Math.Clamp(tzOffsetMinutes, -MaxTzOffsetMinutes, MaxTzOffsetMinutes);
@@ -42,11 +42,11 @@ public sealed class ConsumptionService : IConsumptionService
     public async Task<OperationResult<ConsumptionSummaryDto>> GetSummaryAsync(
         string userId, string deviceId, int tzOffsetMinutes, CancellationToken ct = default)
     {
-        var owned = await _access.GetOwnedDeviceAsync(userId, deviceId, ct);
+        var access = await _access.GetAccessibleDeviceAsync(userId, deviceId, ct: ct);
 
-        if (!owned.Succeeded)
+        if (!access.Succeeded)
         {
-            return OperationResult<ConsumptionSummaryDto>.Fail(owned.Error!);
+            return OperationResult<ConsumptionSummaryDto>.Fail(access.Error!);
         }
 
         var tz = Math.Clamp(tzOffsetMinutes, -MaxTzOffsetMinutes, MaxTzOffsetMinutes);

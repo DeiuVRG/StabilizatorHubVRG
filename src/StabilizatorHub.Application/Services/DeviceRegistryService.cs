@@ -10,6 +10,7 @@ namespace StabilizatorHub.Application.Services;
 public sealed class DeviceRegistryService : IDeviceRegistryService
 {
     private readonly IDeviceRepository _devices;
+    private readonly IDeviceMembershipRepository _memberships;
     private readonly IVoltageEventRepository _events;
     private readonly IUnitOfWork _unitOfWork;
     private readonly VoltageEventTrackerRegistry _trackers;
@@ -21,6 +22,7 @@ public sealed class DeviceRegistryService : IDeviceRegistryService
 
     public DeviceRegistryService(
         IDeviceRepository devices,
+        IDeviceMembershipRepository memberships,
         IVoltageEventRepository events,
         IUnitOfWork unitOfWork,
         VoltageEventTrackerRegistry trackers,
@@ -31,6 +33,7 @@ public sealed class DeviceRegistryService : IDeviceRegistryService
         ILogger<DeviceRegistryService> logger)
     {
         _devices = devices;
+        _memberships = memberships;
         _events = events;
         _unitOfWork = unitOfWork;
         _trackers = trackers;
@@ -77,7 +80,7 @@ public sealed class DeviceRegistryService : IDeviceRegistryService
 
         if (!string.IsNullOrWhiteSpace(pairingCode))
         {
-            if (device.IsClaimed)
+            if (await _memberships.AnyForDeviceAsync(device.Id, ct))
             {
                 // The firmware lost its claimed flag (e.g. flash wipe) - heal it
                 // by re-publishing the retained claim state. The code is NOT stored:

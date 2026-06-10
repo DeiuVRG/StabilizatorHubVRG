@@ -40,15 +40,21 @@ controllerele. SameSite=Lax pe cookie-ul de sesiune e al doilea strat.
 - SignalR: clienții sunt adăugați **doar în grupurile dispozitivelor proprii**
   (verificare și la `JoinDevice`).
 
-## 4. Claiming — protecția codului de împerechere
+## 4. Claiming și invitații — protecția codurilor
 
-- Codul (6 caractere din 32 → ~10^9 combinații) e stocat **doar ca hash PBKDF2
-  cu salt** (100k iterații).
-- Online brute-force blocat: rate limiting per IP + lockout per utilizator
-  (5 eșecuri/15 min, `InMemoryClaimAttemptLimiter`) + audit la fiecare eșec.
-- Codul e **single-use** (hash-ul se șterge la claim) și **se regenerează** la
-  release — un dispozitiv vândut nu poate fi revendicat cu codul vechi.
-- Un dispozitiv deja revendicat nu apare în candidații de claim, indiferent de cod.
+- Codul de împerechere (6 caractere din 32 → ~10^9 combinații) e stocat **doar
+  ca hash PBKDF2 cu salt** (100k iterații); e **single-use** (hash-ul se șterge
+  la claim) și **se regenerează** la release — un dispozitiv vândut nu poate fi
+  revendicat cu codul vechi.
+- Codurile de **invitație** (membri ai casei): 8 caractere, tot hash PBKDF2,
+  **expiră în 48 h**, maximum 10 utilizări, cel mult 5 active per dispozitiv,
+  pot fi create **doar de owner**; invitațiile expirate sunt șterse zilnic.
+- Online brute-force blocat pentru ambele: rate limiting per IP + lockout per
+  utilizator (5 eșecuri/15 min, `InMemoryClaimAttemptLimiter`) + audit la
+  fiecare eșec (un singur „strike" per încercare, indiferent de tipul codului).
+- Un dispozitiv deja revendicat nu apare în candidații de claim, indiferent de
+  cod; accesul ulterior e guvernat de rolul din `DeviceMemberships`
+  (owner: gestiune completă; member: vizualizare + releu).
 
 ## 5. Transport și headere
 

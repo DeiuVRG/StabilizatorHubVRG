@@ -29,14 +29,15 @@ public sealed class DeviceControlService : IDeviceControlService
         string userId, string? userEmail, string deviceId, bool on,
         string? ipAddress, CancellationToken ct = default)
     {
-        var owned = await _access.GetOwnedDeviceAsync(userId, deviceId, ct);
+        // Any household member may switch the relay (not just the owner).
+        var access = await _access.GetAccessibleDeviceAsync(userId, deviceId, ct: ct);
 
-        if (!owned.Succeeded)
+        if (!access.Succeeded)
         {
-            return OperationResult.Fail(owned.Error!);
+            return OperationResult.Fail(access.Error!);
         }
 
-        if (!owned.Value!.IsOnline)
+        if (!access.Value!.Device.IsOnline)
         {
             return OperationResult.Fail(DeviceOfflineError);
         }

@@ -35,9 +35,11 @@ public sealed class AuthController : ControllerBase
     }
 
     /// <summary>
-    /// Creates an account and atomically claims the device whose pairing code
-    /// was entered. When the code is wrong, the freshly created user is rolled
-    /// back - no account exists without a stabilizer.
+    /// Creates an account and atomically attaches it to a device: a pairing
+    /// code (from the device OLED) makes the user the Owner, an invite code
+    /// (from the owner) makes them a household Member. When the code is wrong,
+    /// the freshly created user is rolled back - no account exists without a
+    /// stabilizer.
     /// </summary>
     [HttpPost("register")]
     [AllowAnonymous]
@@ -57,22 +59,23 @@ public sealed class AuthController : ControllerBase
             return BadRequest(new { error = FirstError(created) });
         }
 
-        var claim = await _claimService.ClaimAsync(
+        var redeemed = await _claimService.RedeemCodeAsync(
             user.Id, user.Email, request.PairingCode,
             rateLimitKey: $"register:{ClientIp()}", ipAddress: ClientIp(), ct);
 
-        if (!claim.Succeeded)
+        if (!redeemed.Succeeded)
         {
-            // Roll back: the pairing code is the proof of purchase.
+            // Roll back: the code is the proof of purchase/household membership.
             await _userManager.DeleteAsync(user);
-            return BadRequest(new { error = claim.Error });
+            return BadRequest(new { error = redeemed.Error });
         }
 
         await _signInManager.SignInAsync(user, isPersistent: true);
         await _audit.LogAsync("auth.register", user.Id, user.Email,
-            deviceId: claim.Value!.Id, ipAddress: ClientIp(), ct: ct);
+            deviceId: redeemed.Value!.Id, ipAddress: ClientIp(), ct: ct);
 
-        _logger.LogInformation("New account {Email} with device {DeviceId}", user.Email, claim.Value.Id);
+        _logger.LogInformation("New account {Email} attached to device {DeviceId} as {Role}",
+            user.Email, redeemed.Value.Id, redeemed.Value.Role);
         return Ok(new MeResponse(user.Email!, IsAdmin: false));
     }
 

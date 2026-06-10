@@ -18,11 +18,11 @@ public sealed class EventQueryService : IEventQueryService
     public async Task<OperationResult<IReadOnlyList<VoltageEventDto>>> GetRecentAsync(
         string userId, string deviceId, int take, CancellationToken ct = default)
     {
-        var owned = await _access.GetOwnedDeviceAsync(userId, deviceId, ct);
+        var access = await _access.GetAccessibleDeviceAsync(userId, deviceId, ct: ct);
 
-        if (!owned.Succeeded)
+        if (!access.Succeeded)
         {
-            return OperationResult<IReadOnlyList<VoltageEventDto>>.Fail(owned.Error!);
+            return OperationResult<IReadOnlyList<VoltageEventDto>>.Fail(access.Error!);
         }
 
         var events = await _events.GetRecentAsync(deviceId, Math.Clamp(take, 1, 200), ct);

@@ -10,7 +10,12 @@ export function promptDialog({ title, text, confirmText = 'Save', initialValue =
   return openModal({ title, text, confirmText, danger: false, withInput: true, initialValue });
 }
 
-function openModal({ title, text, confirmText, danger, withInput, initialValue = '' }) {
+/** Information-only dialog (single OK button). */
+export function infoDialog({ title, text, okText = 'Done' }) {
+  return openModal({ title, text, confirmText: okText, danger: false, withInput: false, hideCancel: true });
+}
+
+function openModal({ title, text, confirmText, danger, withInput, initialValue = '', hideCancel = false }) {
   const host = backdrop();
   const titleEl = document.getElementById('modal-title');
   const textEl = document.getElementById('modal-text');
@@ -23,6 +28,7 @@ function openModal({ title, text, confirmText, danger, withInput, initialValue =
   textEl.textContent = text ?? '';
   confirmBtn.textContent = confirmText;
   confirmBtn.className = danger ? 'btn danger' : 'btn primary';
+  cancelBtn.classList.toggle('hidden', hideCancel);
 
   inputWrap.classList.toggle('hidden', !withInput);
   input.value = initialValue;

@@ -38,7 +38,7 @@ public sealed class LiveHub : Hub
         await base.OnConnectedAsync();
     }
 
-    /// <summary>Joins the group of a freshly claimed device without reconnecting (ownership is re-checked).</summary>
+    /// <summary>Joins the group of a freshly attached device without reconnecting (access is re-checked).</summary>
     public async Task JoinDevice(string deviceId)
     {
         var userId = Context.User?.GetUserId();
@@ -48,9 +48,9 @@ public sealed class LiveHub : Hub
             return;
         }
 
-        var owned = await _deviceAccess.GetOwnedDeviceAsync(userId, deviceId);
+        var access = await _deviceAccess.GetAccessibleDeviceAsync(userId, deviceId);
 
-        if (owned.Succeeded)
+        if (access.Succeeded)
         {
             await Groups.AddToGroupAsync(Context.ConnectionId, DeviceGroup(deviceId));
         }

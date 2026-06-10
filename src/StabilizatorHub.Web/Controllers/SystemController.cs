@@ -112,7 +112,7 @@ public sealed class SystemController : ControllerBase
     [Authorize(Roles = Roles.Admin)]
     public async Task<IActionResult> AllDevices(CancellationToken ct)
     {
-        var devices = await _deviceRepository.GetAllAsync(ct);
-        return Ok(devices.Select(AdminDeviceDto.FromEntity));
+        var devices = await _deviceRepository.GetAllWithMemberCountAsync(ct);
+        return Ok(devices.Select(d => AdminDeviceDto.FromEntity(d.Device, d.MemberCount)));
     }
 }

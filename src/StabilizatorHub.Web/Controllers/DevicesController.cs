@@ -1,8 +1,10 @@
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using StabilizatorHub.Application.Dtos;
 using StabilizatorHub.Application.Services;
+using StabilizatorHub.Infrastructure.Persistence;
 using StabilizatorHub.Web.Contracts;
 using StabilizatorHub.Web.Extensions;
 
@@ -22,35 +24,81 @@ public sealed class DevicesController : ControllerBase
     private readonly IDeviceControlService _control;
     private readonly IConsumptionService _consumption;
     private readonly IEventQueryService _events;
+    private readonly UserManager<ApplicationUser> _userManager;
 
     public DevicesController(
         IDeviceQueryService query,
         IDeviceClaimService claim,
         IDeviceControlService control,
         IConsumptionService consumption,
-        IEventQueryService events)
+        IEventQueryService events,
+        UserManager<ApplicationUser> userManager)
     {
         _query = query;
         _claim = claim;
         _control = control;
         _consumption = consumption;
         _events = events;
+        _userManager = userManager;
     }
 
     [HttpGet]
     public async Task<IActionResult> GetMine(CancellationToken ct) =>
         Ok(await _query.GetMineAsync(UserId(), ct));
 
-    /// <summary>Claims an additional device with the pairing code from its OLED.</summary>
+    /// <summary>
+    /// Attaches another device to this account: pairing code = claim as owner,
+    /// invite code = join an existing household device as member.
+    /// </summary>
     [HttpPost("claim")]
     [EnableRateLimiting(RateLimitPolicies.Auth)]
     public async Task<IActionResult> Claim(ClaimRequest request, CancellationToken ct)
     {
-        var result = await _claim.ClaimAsync(
+        var result = await _claim.RedeemCodeAsync(
             UserId(), UserEmail(), request.PairingCode,
             rateLimitKey: $"claim:{UserId()}", ipAddress: ClientIp(), ct);
 
         return result.Succeeded ? Ok(result.Value) : BadRequest(new { error = result.Error });
+    }
+
+    /// <summary>Creates a 48-hour invite code so household members can join (owner only).</summary>
+    [HttpPost("{deviceId}/invites")]
+    public async Task<IActionResult> CreateInvite(string deviceId, CancellationToken ct)
+    {
+        var result = await _claim.CreateInviteAsync(UserId(), UserEmail(), deviceId, ClientIp(), ct);
+        return result.Succeeded ? Ok(result.Value) : BadRequest(new { error = result.Error });
+    }
+
+    /// <summary>Lists device members with their emails (owner only).</summary>
+    [HttpGet("{deviceId}/members")]
+    public async Task<IActionResult> Members(string deviceId, CancellationToken ct)
+    {
+        var result = await _claim.GetMembersAsync(UserId(), deviceId, ct);
+
+        if (!result.Succeeded)
+        {
+            return BadRequest(new { error = result.Error });
+        }
+
+        var members = new List<DeviceMemberDto>(result.Value!.Count);
+
+        foreach (var member in result.Value)
+        {
+            var user = await _userManager.FindByIdAsync(member.UserId);
+            members.Add(member with { Email = user?.Email });
+        }
+
+        return Ok(members);
+    }
+
+    /// <summary>Removes a member (owner) or leaves the device ("me" as target, any member).</summary>
+    [HttpDelete("{deviceId}/members/{targetUserId}")]
+    public async Task<IActionResult> RemoveMember(string deviceId, string targetUserId, CancellationToken ct)
+    {
+        var target = targetUserId == "me" ? UserId() : targetUserId;
+        var result = await _claim.RemoveMemberAsync(UserId(), UserEmail(), deviceId, target, ClientIp(), ct);
+
+        return result.Succeeded ? NoContent() : BadRequest(new { error = result.Error });
     }
 
     [HttpPut("{deviceId}")]

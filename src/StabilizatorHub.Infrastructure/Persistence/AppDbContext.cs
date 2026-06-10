@@ -15,6 +15,10 @@ public class AppDbContext : IdentityDbContext<ApplicationUser>
 
     public DbSet<Device> Devices => Set<Device>();
 
+    public DbSet<DeviceMembership> DeviceMemberships => Set<DeviceMembership>();
+
+    public DbSet<DeviceInvite> DeviceInvites => Set<DeviceInvite>();
+
     public DbSet<TelemetryReading> Readings => Set<TelemetryReading>();
 
     public DbSet<VoltageEvent> VoltageEvents => Set<VoltageEvent>();
@@ -31,11 +35,38 @@ public class AppDbContext : IdentityDbContext<ApplicationUser>
             device.HasKey(d => d.Id);
             device.Property(d => d.Id).HasMaxLength(32);
             device.Property(d => d.Name).HasMaxLength(60).IsRequired();
-            device.Property(d => d.OwnerUserId).HasMaxLength(64);
             device.Property(d => d.PairingCodeHash).HasMaxLength(256);
             device.Property(d => d.FirmwareVersion).HasMaxLength(32);
-            device.HasIndex(d => d.OwnerUserId);
-            device.Ignore(d => d.IsClaimed);
+        });
+
+        builder.Entity<DeviceMembership>(membership =>
+        {
+            membership.ToTable("DeviceMemberships");
+            membership.HasKey(m => m.Id);
+            membership.Property(m => m.DeviceId).HasMaxLength(32).IsRequired();
+            membership.Property(m => m.UserId).HasMaxLength(64).IsRequired();
+            membership.Property(m => m.Role).HasConversion<int>();
+            // One grant per user per device; fast lookup of a user's devices.
+            membership.HasIndex(m => new { m.DeviceId, m.UserId }).IsUnique();
+            membership.HasIndex(m => m.UserId);
+            membership.HasOne<Device>()
+                .WithMany()
+                .HasForeignKey(m => m.DeviceId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        builder.Entity<DeviceInvite>(invite =>
+        {
+            invite.ToTable("DeviceInvites");
+            invite.HasKey(i => i.Id);
+            invite.Property(i => i.DeviceId).HasMaxLength(32).IsRequired();
+            invite.Property(i => i.CodeHash).HasMaxLength(256).IsRequired();
+            invite.Property(i => i.CreatedByUserId).HasMaxLength(64).IsRequired();
+            invite.HasIndex(i => new { i.DeviceId, i.ExpiresAtUtc });
+            invite.HasOne<Device>()
+                .WithMany()
+                .HasForeignKey(i => i.DeviceId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         builder.Entity<TelemetryReading>(reading =>

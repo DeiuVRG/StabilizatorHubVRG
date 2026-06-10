@@ -85,7 +85,7 @@ public sealed class MaintenanceService : BackgroundService
     {
         var today = DateOnly.FromDateTime(_clock.UtcNow);
 
-        if (_options.RawRetentionDays <= 0 || _lastPruneDate == today)
+        if (_lastPruneDate == today)
         {
             return;
         }
@@ -93,8 +93,21 @@ public sealed class MaintenanceService : BackgroundService
         _lastPruneDate = today;
 
         using var scope = _scopeFactory.CreateScope();
-        var telemetry = scope.ServiceProvider.GetRequiredService<ITelemetryRepository>();
 
+        var invites = scope.ServiceProvider.GetRequiredService<IDeviceInviteRepository>();
+        var expired = await invites.DeleteUnusableAsync(_clock.UtcNow, ct);
+
+        if (expired > 0)
+        {
+            _logger.LogInformation("Removed {Count} expired/exhausted device invites", expired);
+        }
+
+        if (_options.RawRetentionDays <= 0)
+        {
+            return;
+        }
+
+        var telemetry = scope.ServiceProvider.GetRequiredService<ITelemetryRepository>();
         var cutoff = _clock.UtcNow.AddDays(-_options.RawRetentionDays);
         var removed = await telemetry.DeleteOlderThanAsync(cutoff, ct);
 

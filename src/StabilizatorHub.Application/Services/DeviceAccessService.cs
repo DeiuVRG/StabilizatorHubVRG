@@ -9,22 +9,31 @@ public sealed class DeviceAccessService : IDeviceAccessService
     public const string NotFoundError = "Device not found.";
 
     private readonly IDeviceRepository _devices;
+    private readonly IDeviceMembershipRepository _memberships;
 
-    public DeviceAccessService(IDeviceRepository devices)
+    public DeviceAccessService(IDeviceRepository devices, IDeviceMembershipRepository memberships)
     {
         _devices = devices;
+        _memberships = memberships;
     }
 
-    public async Task<OperationResult<Device>> GetOwnedDeviceAsync(
-        string userId, string deviceId, CancellationToken ct = default)
+    public async Task<OperationResult<DeviceAccess>> GetAccessibleDeviceAsync(
+        string userId, string deviceId, bool requireOwner = false, CancellationToken ct = default)
     {
         var device = await _devices.GetByIdAsync(deviceId, ct);
 
-        if (device is null || !device.IsOwnedBy(userId))
+        if (device is null)
         {
-            return OperationResult<Device>.Fail(NotFoundError);
+            return OperationResult<DeviceAccess>.Fail(NotFoundError);
         }
 
-        return OperationResult<Device>.Ok(device);
+        var membership = await _memberships.GetAsync(deviceId, userId, ct);
+
+        if (membership is null || (requireOwner && membership.Role != DeviceRole.Owner))
+        {
+            return OperationResult<DeviceAccess>.Fail(NotFoundError);
+        }
+
+        return OperationResult<DeviceAccess>.Ok(new DeviceAccess(device, membership.Role));
     }
 }

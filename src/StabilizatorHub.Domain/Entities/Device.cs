@@ -3,8 +3,9 @@ namespace StabilizatorHub.Domain.Entities;
 /// <summary>
 /// A physical stabilizer unit (ESP32). The id is the device MAC address without
 /// separators (e.g. "A1B2C3D4E5F6") - globally unique and burned into the chip.
-/// A device starts unclaimed; a user becomes its owner by proving physical
-/// possession with the pairing code shown on the device OLED.
+/// A device starts unclaimed; the first user proves physical possession with
+/// the pairing code shown on the OLED and becomes its Owner. Further household
+/// members join through invites (see <see cref="DeviceMembership"/>).
 /// </summary>
 public class Device
 {
@@ -13,9 +14,7 @@ public class Device
     /// <summary>Friendly name chosen by the owner (defaults to the id).</summary>
     public string Name { get; set; } = string.Empty;
 
-    /// <summary>Identity user id of the owner; null while the device is unclaimed.</summary>
-    public string? OwnerUserId { get; set; }
-
+    /// <summary>When the device was first claimed; null while unclaimed.</summary>
     public DateTime? ClaimedAtUtc { get; set; }
 
     /// <summary>
@@ -39,9 +38,4 @@ public class Device
 
     /// <summary>Timestamp of the last telemetry sample (used for energy integration and offline detection).</summary>
     public DateTime? LastTelemetryUtc { get; set; }
-
-    public bool IsClaimed => OwnerUserId is not null;
-
-    public bool IsOwnedBy(string userId) =>
-        OwnerUserId is not null && string.Equals(OwnerUserId, userId, StringComparison.Ordinal);
 }

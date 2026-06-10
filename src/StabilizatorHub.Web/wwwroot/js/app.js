@@ -3,7 +3,7 @@ import { api, toast, fmt, tzOffsetMinutes } from './api.js';
 import { initLive, joinDevice } from './live.js';
 import { initCharts, seedLive, pushLivePoint, clearLive, refreshHistory } from './charts.js';
 import { initControl, applyRelayState } from './control.js';
-import { confirmDialog, promptDialog } from './modal.js';
+import { confirmDialog, promptDialog, infoDialog } from './modal.js';
 
 const state = {
   devices: [],
@@ -113,6 +113,14 @@ function renderDeviceCard(device) {
   el('device-last-seen').textContent = device.lastSeenUtc ? fmt.dateTime(device.lastSeenUtc) : 'never';
   setOnlinePill(device.isOnline);
   applyRelayState(device.outputOn);
+
+  // Owners manage the household; members can watch and switch the relay.
+  const isOwner = device.role === 'owner';
+  el('device-role').textContent = device.role;
+  el('device-role').className = `pill ${isOwner ? 'online' : 'neutral'}`;
+  el('owner-actions').classList.toggle('hidden', !isOwner);
+  el('member-actions').classList.toggle('hidden', isOwner);
+  el('members-area').classList.add('hidden');
 }
 
 function setOnlinePill(isOnline) {
@@ -284,7 +292,7 @@ function wireDeviceActions() {
   el('btn-release').addEventListener('click', async () => {
     const confirmed = await confirmDialog({
       title: 'Unlink this device?',
-      text: 'The device returns to "unclaimed" and shows a new pairing code on its display. You will lose access until someone claims it again.',
+      text: 'The device returns to "unclaimed", ALL household members lose access and a new pairing code appears on its display.',
       confirmText: 'Unlink',
       danger: true
     });
@@ -300,6 +308,99 @@ function wireDeviceActions() {
       toast(err.message, 'error');
     }
   });
+
+  el('btn-invite').addEventListener('click', async () => {
+    try {
+      const invite = await api(`/api/devices/${state.deviceId}/invites`, { method: 'POST' });
+      await infoDialog({
+        title: 'Invite code: ' + invite.code,
+        text: `Share this code with your household. They create an account (or use "+ Add device") and enter it instead of a pairing code. Valid until ${fmt.dateTime(invite.expiresAtUtc)}, up to ${invite.maxUses} uses.`
+      });
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
+  el('btn-members').addEventListener('click', async () => {
+    const area = el('members-area');
+
+    if (!area.classList.contains('hidden')) {
+      area.classList.add('hidden');
+      return;
+    }
+
+    await refreshMembers();
+    area.classList.remove('hidden');
+  });
+
+  el('btn-leave').addEventListener('click', async () => {
+    const confirmed = await confirmDialog({
+      title: 'Leave this device?',
+      text: 'You lose access to its data and control. The owner can invite you back later.',
+      confirmText: 'Leave',
+      danger: true
+    });
+
+    if (!confirmed) return;
+
+    try {
+      await api(`/api/devices/${state.deviceId}/members/me`, { method: 'DELETE' });
+      toast('You left the device.', 'ok');
+      localStorage.removeItem('stabhub.device');
+      await reloadDevices();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+}
+
+async function refreshMembers() {
+  const members = await api(`/api/devices/${state.deviceId}/members`);
+  const body = el('members-body');
+  body.innerHTML = '';
+
+  for (const member of members) {
+    const row = document.createElement('tr');
+
+    const email = document.createElement('td');
+    email.textContent = member.email ?? member.userId;
+
+    const role = document.createElement('td');
+    role.innerHTML = `<span class="pill ${member.role === 'owner' ? 'online' : 'neutral'}">${member.role}</span>`;
+
+    const joined = document.createElement('td');
+    joined.textContent = fmt.dateTime(member.joinedAtUtc);
+
+    const actions = document.createElement('td');
+
+    if (member.role !== 'owner') {
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'btn small danger';
+      removeBtn.textContent = 'Remove';
+      removeBtn.addEventListener('click', async () => {
+        const confirmed = await confirmDialog({
+          title: 'Remove member?',
+          text: `${member.email ?? 'This user'} will immediately lose access to the device.`,
+          confirmText: 'Remove',
+          danger: true
+        });
+
+        if (!confirmed) return;
+
+        try {
+          await api(`/api/devices/${state.deviceId}/members/${member.userId}`, { method: 'DELETE' });
+          toast('Member removed.', 'ok');
+          await refreshMembers();
+        } catch (err) {
+          toast(err.message, 'error');
+        }
+      });
+      actions.appendChild(removeBtn);
+    }
+
+    row.append(email, role, joined, actions);
+    body.appendChild(row);
+  }
 }
 
 function wireRangeTabs() {
