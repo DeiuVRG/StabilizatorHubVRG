@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign in - StabilizatorHub VRG</title>
+  <link rel="icon" href="/assets/logo.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div class="auth-wrap">
+    <div class="card auth-card">
+      <div class="brand">
+        <img class="logo" src="/assets/logo.svg" alt="" />
+        <span>StabilizatorHub VRG</span>
+      </div>
+
+      <div class="tabs" role="tablist">
+        <button id="tab-login" class="active" type="button">Sign in</button>
+        <button id="tab-register" type="button">Create account</button>
+      </div>
+
+      <div id="form-error" class="form-error" role="alert"></div>
+
+      <!-- Sign in -->
+      <form id="login-form" autocomplete="on">
+        <div class="field">
+          <label for="login-email">Email</label>
+          <input id="login-email" type="email" required maxlength="256" autocomplete="email" />
+        </div>
+        <div class="field">
+          <label for="login-password">Password</label>
+          <input id="login-password" type="password" required maxlength="128" autocomplete="current-password" />
+        </div>
+        <button class="btn primary" type="submit" style="width:100%">Sign in</button>
+      </form>
+
+      <!-- Create account -->
+      <form id="register-form" class="hidden" autocomplete="on">
+        <div class="field">
+          <label for="reg-email">Email</label>
+          <input id="reg-email" type="email" required maxlength="256" autocomplete="email" />
+        </div>
+        <div class="field">
+          <label for="reg-password">Password (min. 10 characters, one uppercase, one digit)</label>
+          <input id="reg-password" type="password" required minlength="10" maxlength="128" autocomplete="new-password" />
+        </div>
+        <div class="field">
+          <label for="reg-code">Device pairing code</label>
+          <input id="reg-code" type="text" required minlength="4" maxlength="16"
+                 placeholder="e.g. 7F3K9Q" autocomplete="off" spellcheck="false"
+                 style="text-transform:uppercase" />
+        </div>
+        <p class="hint" style="margin:0 0 14px">
+          The pairing code is shown on the OLED display of your stabilizer while
+          it is not linked to any account. It proves the device is yours.
+        </p>
+        <button class="btn primary" type="submit" style="width:100%">Create account</button>
+      </form>
+
+      <div class="auth-foot">Voltage stabilizer monitoring &amp; control</div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+  <script type="module" src="/js/auth.js"></script>
+</body>
+</html>

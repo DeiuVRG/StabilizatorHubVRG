@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/StabilizatorHub.Application/StabilizatorHub.Application.csproj" />
+    <Project Path="src/StabilizatorHub.Domain/StabilizatorHub.Domain.csproj" />
+    <Project Path="src/StabilizatorHub.Infrastructure/StabilizatorHub.Infrastructure.csproj" />
+    <Project Path="src/StabilizatorHub.Web/StabilizatorHub.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/StabilizatorHub.Tests/StabilizatorHub.Tests.csproj" />
+  </Folder>
+</Solution>

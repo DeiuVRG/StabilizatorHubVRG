@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin - StabilizatorHub VRG</title>
+  <link rel="icon" href="/assets/logo.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img class="logo" src="/assets/logo.svg" alt="" />
+      <span>StabilizatorHub VRG &middot; Admin</span>
+    </div>
+    <div class="spacer"></div>
+    <a class="btn small" href="/">Dashboard</a>
+    <span class="user-email" id="user-email"></span>
+    <button id="btn-logout" class="btn small" type="button">Log out</button>
+  </header>
+
+  <main class="page">
+
+    <!-- Software update -->
+    <section class="card">
+      <div class="card-head">
+        <h2>Software update</h2>
+        <span class="pill neutral">version <span id="sys-version">--</span></span>
+      </div>
+      <p class="hint" style="font-size:0.88rem">
+        Checks GitHub Releases for a newer build. Applying an update writes a
+        trigger file; the dedicated updater service downloads the release,
+        swaps the install and restarts the app.
+      </p>
+      <div style="display:flex; gap:10px; margin-top:10px">
+        <button id="btn-check-update" class="btn" type="button">Check for updates</button>
+        <button id="btn-apply-update" class="btn primary hidden" type="button">Install update</button>
+      </div>
+      <div id="update-result" class="hint" style="font-size:0.88rem"></div>
+    </section>
+
+    <!-- Devices overview -->
+    <section class="card">
+      <div class="card-head"><h2>All devices</h2></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>ID</th><th>Name</th><th>Status</th><th>Claimed</th><th>Firmware</th><th>Last seen</th></tr>
+          </thead>
+          <tbody id="admin-devices-body">
+            <tr><td colspan="6" class="empty-row">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="hint">
+        Unclaimed devices announce a pairing code on their OLED. To provision a
+        new unit, create its MQTT account on the broker:
+        <code>sudo mosquitto_passwd /etc/mosquitto/passwd &lt;DEVICE_ID&gt;</code>
+      </p>
+    </section>
+
+    <!-- Encrypted telemetry logs -->
+    <section class="card">
+      <div class="card-head"><h2>Encrypted telemetry logs</h2></div>
+      <p class="hint" style="font-size:0.88rem">
+        Daily AES-256-GCM encrypted files. Downloading decrypts on the server
+        and is recorded in the audit trail.
+      </p>
+      <div id="log-list" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:10px"></div>
+    </section>
+
+    <!-- Audit trail -->
+    <section class="card">
+      <div class="card-head">
+        <h2>Audit trail</h2>
+        <button id="btn-refresh-audit" class="btn small" type="button">Refresh</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Time (UTC)</th><th>Action</th><th>User</th><th>Device</th><th>Details</th><th>IP</th></tr>
+          </thead>
+          <tbody id="audit-body">
+            <tr><td colspan="6" class="empty-row">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <div class="toasts" id="toasts"></div>
+  <script type="module" src="/js/admin.js"></script>
+</body>
+</html>

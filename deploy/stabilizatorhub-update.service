@@ -1,0 +1,9 @@
+# One-shot updater triggered by stabilizatorhub-update.path.
+# Downloads the latest GitHub release, swaps the install and restarts the app.
+[Unit]
+Description=StabilizatorHub self-update
+
+[Service]
+Type=oneshot
+ExecStart=/opt/stabilizatorhub/bin/update.sh
+TimeoutStartSec=600

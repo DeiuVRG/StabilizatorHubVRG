@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <!-- Web layer (composition root): ASP.NET Core host, REST API controllers,
+       SignalR hub, ASP.NET Core Identity, middleware and the static frontend (wwwroot). -->
+  <PropertyGroup>
+    <RootNamespace>StabilizatorHub.Web</RootNamespace>
+    <AssemblyName>StabilizatorHub.Web</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\StabilizatorHub.Application\StabilizatorHub.Application.csproj" />
+    <ProjectReference Include="..\StabilizatorHub.Infrastructure\StabilizatorHub.Infrastructure.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Required by the dotnet-ef tooling when this is the startup project. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.*">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+</Project>

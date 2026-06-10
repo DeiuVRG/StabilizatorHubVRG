@@ -1,0 +1,32 @@
+# Build .NET
+bin/
+obj/
+publish/
+artifacts/
+*.user
+
+# Date locale aplicație (DB, loguri, chei) — nu se versionează niciodată
+data/
+logs/
+*.db
+*.db-shm
+*.db-wal
+*.key
+
+# Secrete locale
+appsettings.Local.json
+secrets.env
+.env
+
+# IDE / OS
+.vs/
+.vscode/
+.idea/
+.DS_Store
+
+# Teste
+TestResults/
+
+# Tool-uri locale (dotnet-ef)
+.tools/
+design-time.db

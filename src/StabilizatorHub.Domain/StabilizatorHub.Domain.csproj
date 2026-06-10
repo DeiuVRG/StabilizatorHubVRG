@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Domain layer: entities and pure business logic.
+       Depends on nothing (no web framework, no EF) - the core of the architecture. -->
+</Project>

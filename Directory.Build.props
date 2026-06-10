@@ -1,0 +1,14 @@
+<Project>
+  <!-- Common settings for all projects in the solution -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <!-- Application version - single source of truth for the update system.
+         GitHub release tags (vX.Y.Z) must match this value. -->
+    <Version>1.0.0</Version>
+    <Authors>Rusu Andrei-Ioan</Authors>
+    <Product>StabilizatorHubVRG</Product>
+  </PropertyGroup>
+</Project>

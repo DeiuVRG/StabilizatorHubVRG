@@ -1,0 +1,11 @@
+# Watches for the update trigger written by the web app (admin "Install update").
+# Privilege separation: the app only writes a file; this unit (root) updates.
+[Unit]
+Description=Watch for StabilizatorHub update requests
+
+[Path]
+PathExists=/var/lib/stabilizatorhub/update.requested
+Unit=stabilizatorhub-update.service
+
+[Install]
+WantedBy=multi-user.target

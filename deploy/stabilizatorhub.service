@@ -1,0 +1,41 @@
+# Main application service - hardened per docs/securitate.md.
+# Install: sudo cp deploy/stabilizatorhub.service /etc/systemd/system/
+[Unit]
+Description=StabilizatorHub VRG (ASP.NET Core)
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+User=stabhub
+Group=stabhub
+WorkingDirectory=/opt/stabilizatorhub/current
+ExecStart=/usr/bin/dotnet /opt/stabilizatorhub/current/StabilizatorHub.Web.dll
+Restart=always
+RestartSec=5
+
+# Secrets and machine-specific settings (MQTT password, admin account, URLs).
+EnvironmentFile=/etc/stabilizatorhub/secrets.env
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=DOTNET_ROOT=/opt/dotnet
+
+# Writable state (database, encrypted logs, data-protection keys, update trigger):
+# systemd creates and owns /var/lib/stabilizatorhub for the service user.
+StateDirectory=stabilizatorhub
+Environment=Storage__DataDirectory=/var/lib/stabilizatorhub
+
+# --- Sandboxing (defense in depth) ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+# NOTE: MemoryDenyWriteExecute must stay OFF for the .NET JIT (W^X).
+
+[Install]
+WantedBy=multi-user.target

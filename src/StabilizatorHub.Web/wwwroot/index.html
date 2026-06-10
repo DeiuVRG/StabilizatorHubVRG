@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard - StabilizatorHub VRG</title>
+  <link rel="icon" href="/assets/logo.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img class="logo" src="/assets/logo.svg" alt="" />
+      <span>StabilizatorHub VRG</span>
+    </div>
+
+    <select id="device-select" class="device-select hidden" title="Select device"></select>
+    <button id="btn-add-device" class="btn small" type="button" title="Claim another device">+ Add device</button>
+
+    <div class="spacer"></div>
+
+    <div id="conn" class="conn" data-state="offline" title="Real-time connection status">
+      <span class="dot"></span><span id="conn-text">connecting...</span>
+    </div>
+    <a id="admin-link" class="btn small hidden" href="/admin.html">Admin</a>
+    <span class="user-email" id="user-email"></span>
+    <button id="btn-logout" class="btn small" type="button">Log out</button>
+  </header>
+
+  <main class="page">
+
+    <!-- Empty state: no claimed device yet -->
+    <section id="empty-state" class="card hidden">
+      <h2>Link your stabilizer</h2>
+      <p class="hint" style="font-size:0.9rem">
+        Enter the pairing code shown on the OLED display of the device.
+        Once linked, only your account can see and control it.
+      </p>
+      <form id="claim-form-empty" style="max-width:340px; margin-top:12px">
+        <div class="field">
+          <label for="claim-code-empty">Pairing code</label>
+          <input id="claim-code-empty" minlength="4" maxlength="16" required
+                 placeholder="e.g. 7F3K9Q" autocomplete="off" spellcheck="false"
+                 style="text-transform:uppercase" />
+        </div>
+        <button class="btn primary" type="submit">Link device</button>
+      </form>
+    </section>
+
+    <!-- Dashboard -->
+    <div id="dashboard" class="hidden">
+
+      <!-- Live stats -->
+      <section class="grid stats">
+        <div class="card stat">
+          <div class="label">Input voltage</div>
+          <div class="value"><span id="stat-vin">--</span><span class="unit">V</span></div>
+          <div class="sub"><span id="vin-flag" class="pill neutral">grid</span></div>
+        </div>
+        <div class="card stat">
+          <div class="label">Output voltage</div>
+          <div class="value"><span id="stat-vout">--</span><span class="unit">V</span></div>
+          <div class="sub">regulated to ~230 V</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Power</div>
+          <div class="value"><span id="stat-power">--</span><span class="unit">W</span></div>
+          <div class="sub"><span id="stat-current">--</span> A load current</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Energy today</div>
+          <div class="value"><span id="stat-today">--</span><span class="unit">kWh</span></div>
+          <div class="sub">last update: <span id="last-update">never</span></div>
+        </div>
+      </section>
+
+      <!-- Device control + live chart -->
+      <section class="grid two" style="margin-top:16px">
+        <div class="card">
+          <div class="card-head">
+            <h2>Live voltage (last hour)</h2>
+          </div>
+          <div class="chart-box"><canvas id="live-chart"></canvas></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2 id="device-name">Device</h2>
+            <span id="device-online" class="pill offline">offline</span>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:14px; margin:14px 0">
+            <label class="switch" title="Output relay">
+              <input type="checkbox" id="relay-switch" />
+              <span class="slider"></span>
+            </label>
+            <div>
+              <div style="font-weight:600" id="relay-label">Output OFF</div>
+              <div class="hint" style="margin:0">Switches the SSR that powers the connected load</div>
+            </div>
+          </div>
+
+          <div class="device-meta">
+            <span>ID: <b id="device-id">--</b></span>
+            <span>Firmware: <b id="device-fw">--</b></span>
+            <span>Last seen: <b id="device-last-seen">--</b></span>
+          </div>
+
+          <div style="display:flex; gap:10px; margin-top:16px">
+            <button id="btn-rename" class="btn small" type="button">Rename</button>
+            <button id="btn-release" class="btn small danger" type="button">Unlink device</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Consumption -->
+      <section class="card" style="margin-top:16px">
+        <div class="card-head">
+          <h2>Energy consumption</h2>
+          <div class="tabs" id="range-tabs">
+            <button data-range="day" class="active" type="button">24 h</button>
+            <button data-range="week" type="button">7 days</button>
+            <button data-range="month" type="button">30 days</button>
+            <button data-range="year" type="button">12 months</button>
+          </div>
+        </div>
+        <div class="summary-chips">
+          <span class="chip">Today<b id="sum-today">--</b></span>
+          <span class="chip">Last 7 days<b id="sum-week">--</b></span>
+          <span class="chip">Last 30 days<b id="sum-month">--</b></span>
+        </div>
+        <div class="chart-box"><canvas id="history-chart"></canvas></div>
+      </section>
+
+      <!-- Voltage events -->
+      <section class="card" style="margin-top:16px">
+        <div class="card-head">
+          <h2>Voltage events</h2>
+          <span class="hint" style="margin:0">undervoltage &le; 215 V &middot; overvoltage &ge; 240 V (input)</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Type</th><th>Started</th><th>Duration</th><th>Worst value</th><th>Samples</th><th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="events-body">
+              <tr><td colspan="6" class="empty-row">No events recorded</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="footer">StabilizatorHub VRG <span id="app-version"></span></div>
+    </div>
+  </main>
+
+  <!-- Confirm modal (shared) -->
+  <div class="modal-backdrop" id="modal">
+    <div class="modal" role="dialog" aria-modal="true">
+      <h3 id="modal-title">Confirm</h3>
+      <p id="modal-text"></p>
+      <div id="modal-input-wrap" class="field hidden">
+        <input id="modal-input" maxlength="60" />
+      </div>
+      <div class="modal-actions">
+        <button class="btn" id="modal-cancel" type="button">Cancel</button>
+        <button class="btn primary" id="modal-confirm" type="button">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+
+  <script src="/lib/signalr.min.js"></script>
+  <script src="/lib/chart.umd.min.js"></script>
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
