@@ -9,9 +9,15 @@ const PENDING_TIMEOUT_MS = 20000;
 let getDeviceId = null;
 let pendingTimer = null;
 let lastKnownState = false;
+let demoMode = false;
 
 const relaySwitch = () => document.getElementById('relay-switch');
 const relayLabel = () => document.getElementById('relay-label');
+
+/** Demo sessions are view-only: the switch stays disabled but keeps showing the real state. */
+export function setDemoMode(enabled) {
+  demoMode = enabled;
+}
 
 export function initControl(deviceIdProvider) {
   getDeviceId = deviceIdProvider;
@@ -64,9 +70,11 @@ export function applyRelayState(outputOn) {
 
 function setPending(pending, switchState) {
   const sw = relaySwitch();
-  sw.disabled = pending;
+  sw.disabled = pending || demoMode;
   sw.checked = switchState;
-  relayLabel().textContent = pending
-    ? 'Waiting for device...'
-    : switchState ? 'Output ON' : 'Output OFF';
+  relayLabel().textContent = demoMode
+    ? (switchState ? 'Output ON (demo)' : 'Output OFF (demo)')
+    : pending
+      ? 'Waiting for device...'
+      : switchState ? 'Output ON' : 'Output OFF';
 }

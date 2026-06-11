@@ -31,6 +31,7 @@ public static class DependencyInjection
         services.Configure<VoltageMonitorOptions>(configuration.GetSection(VoltageMonitorOptions.SectionName));
         services.Configure<MqttOptions>(configuration.GetSection(MqttOptions.SectionName));
         services.Configure<UpdateOptions>(configuration.GetSection(UpdateOptions.SectionName));
+        services.Configure<Demo.DemoOptions>(configuration.GetSection(Demo.DemoOptions.SectionName));
         services.PostConfigure<UpdateOptions>(options =>
         {
             if (string.IsNullOrWhiteSpace(options.TriggerFilePath))
@@ -90,6 +91,9 @@ public static class DependencyInjection
 
         // Housekeeping.
         services.AddHostedService<MaintenanceService>();
+
+        // Demo mode (no-op unless Demo:Enabled).
+        services.AddHostedService<Demo.DemoDataService>();
 
         return services;
     }

@@ -7,7 +7,7 @@
     <LangVersion>latest</LangVersion>
     <!-- Application version - single source of truth for the update system.
          GitHub release tags (vX.Y.Z) must match this value. -->
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <Authors>Rusu Andrei-Ioan</Authors>
     <Product>StabilizatorHubVRG</Product>
   </PropertyGroup>

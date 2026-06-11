@@ -69,5 +69,9 @@ registerForm.addEventListener('submit', event => {
     }));
 });
 
+document.getElementById('btn-demo').addEventListener('click', event => {
+  submit(event.currentTarget, () => api('/api/auth/demo', { method: 'POST' }));
+});
+
 // Already signed in? Go straight to the dashboard.
 api('/api/auth/me').then(() => { location.href = '/'; }).catch(() => { /* stay */ });

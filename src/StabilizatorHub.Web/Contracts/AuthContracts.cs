@@ -36,4 +36,4 @@ public sealed record ChangePasswordRequest
     public string NewPassword { get; init; } = string.Empty;
 }
 
-public sealed record MeResponse(string Email, bool IsAdmin);
+public sealed record MeResponse(string Email, bool IsAdmin, bool IsDemo = false);

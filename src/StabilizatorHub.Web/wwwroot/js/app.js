@@ -2,13 +2,14 @@
 import { api, toast, fmt, tzOffsetMinutes } from './api.js';
 import { initLive, joinDevice } from './live.js';
 import { initCharts, seedLive, pushLivePoint, clearLive, refreshHistory } from './charts.js';
-import { initControl, applyRelayState } from './control.js';
+import { initControl, applyRelayState, setDemoMode } from './control.js';
 import { confirmDialog, promptDialog, infoDialog } from './modal.js';
 
 const state = {
   devices: [],
   deviceId: null,
-  range: 'day'
+  range: 'day',
+  isDemo: false
 };
 
 const el = id => document.getElementById(id);
@@ -20,8 +21,12 @@ const el = id => document.getElementById(id);
 async function boot() {
   const me = await api('/api/auth/me'); // 401 redirects to login
 
-  el('user-email').textContent = me.email;
+  el('user-email').textContent = me.isDemo ? 'demo visitor' : me.email;
   el('admin-link').classList.toggle('hidden', !me.isAdmin);
+  state.isDemo = !!me.isDemo;
+  el('demo-banner').classList.toggle('hidden', !state.isDemo);
+  el('btn-add-device').classList.toggle('hidden', state.isDemo);
+  setDemoMode(state.isDemo);
   el('btn-logout').addEventListener('click', logout);
 
   initCharts();
@@ -119,7 +124,7 @@ function renderDeviceCard(device) {
   el('device-role').textContent = device.role;
   el('device-role').className = `pill ${isOwner ? 'online' : 'neutral'}`;
   el('owner-actions').classList.toggle('hidden', !isOwner);
-  el('member-actions').classList.toggle('hidden', isOwner);
+  el('member-actions').classList.toggle('hidden', isOwner || state.isDemo);
   el('members-area').classList.add('hidden');
 }
 

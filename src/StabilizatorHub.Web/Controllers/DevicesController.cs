@@ -2,8 +2,10 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Options;
 using StabilizatorHub.Application.Dtos;
 using StabilizatorHub.Application.Services;
+using StabilizatorHub.Infrastructure.Demo;
 using StabilizatorHub.Infrastructure.Persistence;
 using StabilizatorHub.Web.Contracts;
 using StabilizatorHub.Web.Extensions;
@@ -25,6 +27,7 @@ public sealed class DevicesController : ControllerBase
     private readonly IConsumptionService _consumption;
     private readonly IEventQueryService _events;
     private readonly UserManager<ApplicationUser> _userManager;
+    private readonly DemoOptions _demoOptions;
 
     public DevicesController(
         IDeviceQueryService query,
@@ -32,7 +35,8 @@ public sealed class DevicesController : ControllerBase
         IDeviceControlService control,
         IConsumptionService consumption,
         IEventQueryService events,
-        UserManager<ApplicationUser> userManager)
+        UserManager<ApplicationUser> userManager,
+        IOptions<DemoOptions> demoOptions)
     {
         _query = query;
         _claim = claim;
@@ -40,6 +44,7 @@ public sealed class DevicesController : ControllerBase
         _consumption = consumption;
         _events = events;
         _userManager = userManager;
+        _demoOptions = demoOptions.Value;
     }
 
     [HttpGet]
@@ -54,6 +59,11 @@ public sealed class DevicesController : ControllerBase
     [EnableRateLimiting(RateLimitPolicies.Auth)]
     public async Task<IActionResult> Claim(ClaimRequest request, CancellationToken ct)
     {
+        if (IsDemoUser())
+        {
+            return BadRequest(new { error = "Not available in demo mode." });
+        }
+
         var result = await _claim.RedeemCodeAsync(
             UserId(), UserEmail(), request.PairingCode,
             rateLimitKey: $"claim:{UserId()}", ipAddress: ClientIp(), ct);
@@ -95,6 +105,11 @@ public sealed class DevicesController : ControllerBase
     [HttpDelete("{deviceId}/members/{targetUserId}")]
     public async Task<IActionResult> RemoveMember(string deviceId, string targetUserId, CancellationToken ct)
     {
+        if (IsDemoUser())
+        {
+            return BadRequest(new { error = "Not available in demo mode." });
+        }
+
         var target = targetUserId == "me" ? UserId() : targetUserId;
         var result = await _claim.RemoveMemberAsync(UserId(), UserEmail(), deviceId, target, ClientIp(), ct);
 
@@ -116,10 +131,15 @@ public sealed class DevicesController : ControllerBase
         return result.Succeeded ? NoContent() : BadRequest(new { error = result.Error });
     }
 
-    /// <summary>Remote SSR on/off.</summary>
+    /// <summary>Remote SSR on/off (view-only demo accounts cannot switch anything).</summary>
     [HttpPost("{deviceId}/control")]
     public async Task<IActionResult> Control(string deviceId, ControlRequest request, CancellationToken ct)
     {
+        if (IsDemoUser())
+        {
+            return BadRequest(new { error = "Not available in demo mode." });
+        }
+
         var result = await _control.SetOutputAsync(
             UserId(), UserEmail(), deviceId, request.On!.Value, ClientIp(), ct);
 
@@ -175,6 +195,10 @@ public sealed class DevicesController : ControllerBase
     private string UserId() => User.GetUserId()!;
 
     private string? UserEmail() => User.GetEmail();
+
+    private bool IsDemoUser() =>
+        _demoOptions.Enabled
+        && string.Equals(UserEmail(), _demoOptions.Email, StringComparison.OrdinalIgnoreCase);
 
     private string? ClientIp() => HttpContext.Connection.RemoteIpAddress?.ToString();
 }
