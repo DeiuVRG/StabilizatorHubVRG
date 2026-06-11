@@ -69,8 +69,8 @@ sudo nano /etc/stabilizatorhub/secrets.env   # parola MQTT + contul de admin
 sudo systemctl restart stabilizatorhub
 ```
 
-Serverul (OS, Mosquitto, Cloudflare Tunnel, Tailscale, hardening) este documentat în
-[docs/server-raspberry-pi-documentatie-completa.md](docs/server-raspberry-pi-documentatie-completa.md).
+Serverul (OS, Mosquitto, Cloudflare Tunnel, Tailscale, hardening) este documentat
+separat, în documentația de configurare a serverului din dosarul lucrării.
 
 ## Integrarea ESP32
 

@@ -2,8 +2,8 @@
 
 Apărare pe straturi — aplicația comandă un echipament la 230 V, deci securitatea
 nu e opțională. Acest document acoperă stratul aplicației; stratul de sistem
-(SSH, firewall, Cloudflare, Tailscale) e în
-[server-raspberry-pi-documentatie-completa.md](server-raspberry-pi-documentatie-completa.md).
+(SSH, firewall, Cloudflare, Tailscale) este documentat separat, în
+documentația de configurare a serverului din dosarul lucrării.
 
 ## 1. Autentificare și conturi
 

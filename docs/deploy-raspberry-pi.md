@@ -1,8 +1,8 @@
 # Deploy pe Raspberry Pi
 
 Pornește de la serverul deja configurat (OS, Mosquitto, Cloudflare Tunnel,
-Tailscale, .NET runtime — vezi
-[server-raspberry-pi-documentatie-completa.md](server-raspberry-pi-documentatie-completa.md)).
+Tailscale, .NET runtime — configurarea completă a serverului este documentată
+separat, în dosarul lucrării de licență).
 
 ## 1. Layout pe Pi
 
