@@ -2,40 +2,58 @@
  * ============================================================================
  *  VOLTAGE STABILIZER - ESP32 firmware (StabilizatorHubVRG)
  * ============================================================================
- *  Features:
- *   - WiFi provisioning (WiFiManager captive portal on first boot)
- *   - Device identity = MAC address; MQTT secret + pairing code stored in NVS
- *   - MQTT: telemetry every 60 s, on/off commands, online/offline via LWT
- *   - Device claiming: pairing code on the OLED while unclaimed; the backend
- *     publishes "claimed" true/false (retained). On "false" a FRESH pairing
- *     code is generated, so a released/sold device can never be re-claimed
- *     with the old code.
- *   - Sensors: 2x ZMPT101B (input/output voltage), ACS712-20A (current) - RMS
- *   - Variac regulation: DC motor via BTS7960 keeps the output at ~230 V
- *     (deadband control with proportional speed + stall protection)
- *   - SSR output relay (remote on/off from the web app)
+ *  This firmware keeps the proven local hardware layer (sensors, complementary
+ *  LEDC motor drive, SSR, deadband regulation) and adds network connectivity:
  *
- *  MQTT contract (must match the backend - see docs/esp32-integrare.md):
- *   stabilizator/{deviceId}/telemetrie  -> {"vin":228,"vout":230,"i":3.10,
- *                                           "p":713,"e":12.40,"out":1,
- *                                           "fw":"1.1.0"}        (every 60 s)
- *   stabilizator/{deviceId}/status      -> "online"/"offline"    (retained, LWT)
- *   stabilizator/{deviceId}/info        -> {"pair":"7F3K9Q","fw":"1.1.0"} (retained)
- *   stabilizator/{deviceId}/comanda     <- {"output":"on"|"off"}
- *   stabilizator/{deviceId}/claimed     <- "true"/"false"        (retained)
+ *   - WiFi provisioning: WiFiManager captive portal "Stabilizator-Setup" on the
+ *     first boot (or when the saved network is gone). The Raspberry Pi broker IP
+ *     is ALSO entered there, so the Pi address can change without reflashing.
+ *   - Device identity = WiFi MAC. The MQTT secret and the pairing code are
+ *     generated once and stored in NVS (flash).
+ *   - MQTT (Mosquitto on the Pi): telemetry every 60 s, remote on/off, the
+ *     "online"/"offline" presence is published by the broker via LWT.
+ *   - Claiming: while unclaimed the pairing code is shown on the OLED (it
+ *     alternates with the live voltage screen for bench testing); the backend
+ *     publishes "claimed" true/false (retained). On "false" a FRESH pairing
+ *     code is generated, so a released device can't be re-claimed with the old
+ *     code.
+ *   - Local fail-safe: regulation, sensors and the SSR safety cutoff run on the
+ *     Arduino loop() (core 1). ALL networking (WiFi portal, WiFi/MQTT
+ *     reconnects) runs in a separate FreeRTOS task on core 0, so a dead/absent
+ *     broker can never stall the 230 V control loop. State shared between the
+ *     two cores is volatile (scalars) or mutex-guarded (pairing String, NVS).
+ *   - The SSR output starts OFF after boot (safe default); it energizes only on
+ *     'out_on' / an {"output":"on"} command AND only when mains are present.
+ *
+ *  HARDWARE (matches the real wiring of this build):
+ *    V_in   ZMPT/divider  -> GPIO34 (ADC1, input-only)
+ *    V_out  ZMPT/divider  -> GPIO35 (ADC1, input-only)
+ *    I_load ACS712-20A    -> GPIO32 (ADC1)              <-- current sensor
+ *    Motor BTS7960: L_PWM=26 (inverting), R_PWM=25 (non-inverting),
+ *                   L_EN=27, R_EN=14   (complementary PWM, 50% = stop)
+ *    SSR output relay     -> GPIO13 (active HIGH)
+ *    OLED SSD1306 I2C     -> SDA=21, SCL=22 (0x3C)
+ *
+ *  IMPORTANT: GPIO32/34/35 are all ADC1 channels, so they keep working while
+ *  WiFi is on (ADC2 would not - do not move the sensors to ADC2 pins).
+ *
+ *  MQTT contract (must match the backend):
+ *    stabilizator/{MAC}/telemetrie -> {"vin":228,"vout":230,"i":3.10,"p":713,
+ *                                      "e":12.40,"out":1,"fw":"2.0.0"}   (60 s)
+ *    stabilizator/{MAC}/status     -> "online"/"offline"   (retained, LWT)
+ *    stabilizator/{MAC}/info       -> {"pair":"7F3K9Q","fw":"2.0.0"} (retained)
+ *    stabilizator/{MAC}/comanda    <- {"output":"on"|"off"}   (SSR remote)
+ *    stabilizator/{MAC}/claimed    <- "true"/"false"          (retained)
  *
  *  Libraries (Arduino Library Manager):
- *   - WiFiManager (tzapu), PubSubClient (Nick O'Leary), ArduinoJson,
- *     Adafruit GFX, Adafruit SSD1306
+ *    WiFiManager (tzapu), PubSubClient (Nick O'Leary), ArduinoJson,
+ *    Adafruit GFX, Adafruit SSD1306
  *
- *  NOTE: PubSubClient default MQTT_MAX_PACKET_SIZE (256) is enough here.
+ *  Serial (115200, "Newline"): auto|manual|up|down|stop|<0..100>|
+ *    out_on|out_off|in <V>|out <V>|cur <A>|net|show
  *
- *  !! CALIBRATION required on real hardware: CAL_VIN / CAL_VOUT / ACS_SENS /
- *     DIVIDER_RATIO - adjust against a reference multimeter (see CONFIG).
- *
- *  !! SAFETY: 230 V mains. Hardware end-stop switches + diodes protect the
- *     variac travel limits independently of this code. The regulation loop
- *     runs even without network (local fail-safe).
+ *  !! CALIBRATE on real hardware: in <V> / out <V> / cur <A> against a
+ *     reference meter (or set CAL_VIN/CAL_VOUT/CAL_I below).
  * ============================================================================
  */
 
@@ -50,59 +68,65 @@
 
 // ============================ CONFIG ============================
 
-#define FW_VERSION   "1.1.0"
+#define FW_VERSION   "2.0.0"
 
-// --- Pins (see docs/files schema: GPIO mapping table) ---
-#define PIN_VIN      34      // ZMPT101B #1 - input voltage  (ADC, input-only)
-#define PIN_VOUT     35      // ZMPT101B #2 - output voltage (ADC, input-only)
-#define PIN_ILOAD    36      // ACS712 current, through divider (ADC, input-only)
-#define PIN_RPWM     25      // BTS7960 RPWM
-#define PIN_LPWM     26      // BTS7960 LPWM
-#define PIN_MEN      27      // BTS7960 R_EN + L_EN (tied together)
-#define PIN_SSR      14      // SSR RELAY_IN (direct or through NPN driver)
-#define PIN_SDA      21      // OLED SDA
-#define PIN_SCL      22      // OLED SCL
+// --- OLED ---
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET   -1
+#define OLED_ADDR    0x3C
 
-// --- MQTT broker = the Raspberry Pi on the LAN ---
-// Find the Pi address with `hostname -I`; ideally give the Pi a DHCP
-// reservation so this never changes.
-#define MQTT_HOST    "192.168.1.10"
-#define MQTT_PORT    1883
+// --- Pins: sensors / OLED ---
+const int PIN_VIN  = 34;   // V_in  (ADC1)
+const int PIN_VOUT = 35;   // V_out (ADC1)
+const int PIN_ILOAD = 32;  // ACS712 current (ADC1)
+const int PIN_SDA  = 21;
+const int PIN_SCL  = 22;
 
-// --- Regulation ---
-const float TARGET_V    = 230.0f;  // output target [V]
-const float DEADBAND_V  = 4.0f;    // +/- deadband [V] (no hunting inside it)
-const float MAX_ERROR_V = 25.0f;   // error mapped to full motor speed
-const int   DUTY_MIN    = 90;      // slow creep PWM near the target (0..255)
-const int   DUTY_MAX    = 230;     // full speed PWM (0..255)
-const float VIN_MIN_OK  = 120.0f;  // below this we assume no mains -> motor stop
+// --- Pins: motor (BTS7960) ---
+const int L_PWM = 26;   // inverting
+const int R_PWM = 25;   // non-inverting
+const int L_EN  = 27;   // enable left
+const int R_EN  = 14;   // enable right
 
-// If the brush moves the wrong way (output drops when it should rise),
-// flip this or swap the M+/M- motor wires.
-const bool  INVERT_MOTOR = false;
+// --- Pin: SSR output relay ---
+const int  PIN_SSR = 13;            // relay IN -> GPIO13 ; relay GND -> GND
+const bool SSR_ACTIV_HIGH = true;   // set false if the relay is inverted
 
-// Stall protection: if the motor runs continuously in one direction longer
-// than this without reaching the deadband, stop commanding it (end of travel
-// or jammed). Hardware end-stops remain the real protection.
-const unsigned long MAX_RUN_MS = 20000UL;
+// --- Motor PWM (LEDC) ---
+const int PWM_FREQ = 1000;
+const int PWM_RES  = 11;            // 0..2047
+const int PWM_MAX  = (1 << PWM_RES) - 1;
 
-// --- Sensor calibration (ADJUST with a reference multimeter!) ---
-const float ADC_VREF      = 3.30f;   // ESP32 ADC reference [V]
-const int   ADC_MAX       = 4095;    // 12-bit
-const float CAL_VIN       = 110.0f;  // (Vrms at ADC pin) -> mains Vrms, input  (CALIBRATE)
-const float CAL_VOUT      = 110.0f;  // (Vrms at ADC pin) -> mains Vrms, output (CALIBRATE)
-const float DIVIDER_RATIO = 0.6f;    // ACS divider: R2/(R1+R2) = 15/(10+15)
-const float ACS_SENS      = 0.100f;  // V/A for ACS712-20A (0.066 for 30A, 0.185 for 5A)
-const float I_NOISE_FLOOR = 0.05f;   // [A] below this report 0 (sensor noise)
+// --- Sensor calibration (ADC-count multipliers; CALIBRATE!) ---
+float CAL_VIN  = 0.4120f;  // V per ADC-count RMS, input   ('in <V>')
+float CAL_VOUT = 0.4727f;  // V per ADC-count RMS, output  ('out <V>')
+float CAL_I    = 0.0500f;  // A per ADC-count RMS, current ('cur <A>')
+const float I_NOISE_FLOOR = 0.05f; // [A] below this report 0 (sensor noise)
 
-// --- Timing ---
-const unsigned long T_TELEMETRY_MS = 60000UL;  // telemetry every 60 seconds
-const unsigned long T_CONTROL_MS   = 250UL;    // regulation step
-const unsigned long T_OLED_MS      = 500UL;    // display refresh
-const unsigned long BOOT_GRACE_MS  = 1500UL;   // let sensors settle, motor off
+// --- Regulation (target +/- 1 V) ---
+const float TINTA      = 230.0f;
+const float BANDA      = 1.0f;      // +/- 1 V deadband
+const float HISTEREZA  = 1.0f;      // anti-hunting
+const float EROARE_MAX = 30.0f;     // beyond this -> full speed
+const int   STEP_MIN   = 8;         // slow creep near the target (58%/42%)
+const int   STEP_MAX   = 45;        // fast when far away
+const float VIN_MIN_OK = 120.0f;    // below this = no mains -> motor stop + SSR off
 
-// Restore the SSR state from NVS after a power cut. Default false = the
-// output stays OFF after boot until switched on (safe default).
+// If regulation runs the wrong way (OUT drops when it should rise), set true:
+const bool INVERSEAZA = false;
+// When stable, optionally cut the enables (zero current through the motor):
+const bool ENABLE_OFF_WHEN_STABLE = false;
+
+// --- Safety / timing ---
+const uint32_t MAX_RUN_MS    = 30000UL;  // stall guard: max continuous run
+const uint32_t BOOT_GRACE_MS = 1500UL;   // sensors settle, motor off
+const uint32_t MANUAL_MAX_MS = 15000UL;  // manual command auto-stop
+const uint32_t FEREASTRA_US  = 60000UL;  // RMS window (60 ms = 3 cycles @50 Hz)
+const uint32_t T_TELEMETRY_MS = 60000UL; // telemetry every 60 s
+const uint32_t T_OLED_MS     = 500UL;    // OLED refresh
+
+// Restore SSR state from NVS after a power cut. false = output OFF after boot.
 const bool RESTORE_OUTPUT = false;
 
 // ============================ GLOBALS ============================
@@ -110,42 +134,71 @@ const bool RESTORE_OUTPUT = false;
 WiFiClient        net;
 PubSubClient      mqtt(net);
 Preferences       prefs;
-Adafruit_SSD1306  oled(128, 64, &Wire, -1);
-bool              oledOk = false;
+Adafruit_SSD1306  display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+bool oledOk = false;
 
-String deviceId;        // MAC without ":" (e.g. A1B2C3D4E5F6)
-String deviceSecret;    // MQTT password of this device (NVS)
-String pairingCode;     // code shown on the OLED while unclaimed (NVS)
-bool   claimed = false;
+// identity / network (NVS)
+String deviceId;        // MAC without ":" (e.g. A1B2C3D4E5F6) == MQTT user
+String deviceSecret;    // MQTT password of this device
+String pairingCode;     // shown on the OLED while unclaimed (guarded by pairMutex)
+String mqttHost = "192.168.1.10";
+int    mqttPort = 1883;
+volatile bool claimed = false;
 
 String tTelemetry, tStatus, tInfo, tCommand, tClaimed;
 
-float  vIn = 0, vOut = 0, iLoad = 0, powerW = 0;
-double energyWh = 0;     // cumulative since boot (the backend integrates anyway)
-bool   outputOn = false;
+// --- Concurrency (control loop = core 1, network task = core 0) ---
+// Scalars shared across cores are `volatile`: aligned 32-bit loads/stores are
+// atomic on the ESP32, so a stale-by-one-cycle read is the worst case and is
+// harmless. Non-atomic shared state (the pairingCode String, NVS/Preferences)
+// is guarded by a mutex.
+SemaphoreHandle_t nvsMutex;     // serializes all Preferences (NVS) access
+SemaphoreHandle_t pairMutex;    // serializes pairingCode String access
+TaskHandle_t      netTaskHandle = nullptr;
 
-unsigned long lastTelemetry = 0, lastControl = 0, lastOled = 0;
+// measurements (control task writes, network task reads for telemetry)
+float adcInRms_last = 0, adcOutRms_last = 0, adcIloadRms_last = 0;  // control-only
+float vin = 0, vout = 0;                                            // control-only
+volatile float vinFilt = 0, voutFilt = 0, iLoad = 0, powerW = 0, energyWh = 0;
+volatile bool  ssrDorit = false;       // user/backend wants current at the output?
+volatile bool  ssrStareReala = false;  // actual SSR pin state
+volatile bool  netConnected = false;   // mirror of mqtt.connected() for core 1
 
-// regulation state
-int           lastDirection = 0;    // 0 stop, 1 raise, 2 lower
-unsigned long directionSince = 0;
-bool          stalled = false;
+// control / serial state (control task only)
+String  buf = "";
+bool    autoMode = true, manualActiv = false;
+uint32_t manualStart = 0;
+int     dutyAplicat = 50;
+uint32_t lastOled = 0, lastEnergyTick = 0;
+
+// WiFiManager: extra fields for the broker (filled in the captive portal)
+char wmHost[40] = "192.168.1.10";
+char wmPort[8]  = "1883";
+bool wmShouldSave = false;
+void wmSaveCallback() { wmShouldSave = true; }
 
 // ============================ IDENTITY ============================
 
 String randomCode(int length) {
-  // 32 unambiguous characters (no 0/O, 1/I).
-  static const char charset[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  static const char charset[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O,1/I
   String s;
   for (int i = 0; i < length; i++) s += charset[esp_random() % 32];
   return s;
 }
-
 String randomHex(int length) {
   static const char hexc[] = "0123456789ABCDEF";
   String s;
   for (int i = 0; i < length; i++) s += hexc[esp_random() % 16];
   return s;
+}
+
+void buildTopics() {
+  String base = "stabilizator/" + deviceId;
+  tTelemetry = base + "/telemetrie";
+  tStatus    = base + "/status";
+  tInfo      = base + "/info";
+  tCommand   = base + "/comanda";
+  tClaimed   = base + "/claimed";
 }
 
 void loadIdentity() {
@@ -155,191 +208,141 @@ void loadIdentity() {
   deviceId.replace(":", "");
 
   deviceSecret = prefs.getString("secret", "");
-  if (deviceSecret == "") {                  // first boot ever
-    deviceSecret = randomHex(32);
-    prefs.putString("secret", deviceSecret);
-  }
+  if (deviceSecret == "") { deviceSecret = randomHex(32); prefs.putString("secret", deviceSecret); }
 
   pairingCode = prefs.getString("pair", "");
-  if (pairingCode == "") {
-    pairingCode = randomCode(6);
-    prefs.putString("pair", pairingCode);
-  }
+  if (pairingCode == "") { pairingCode = randomCode(6); prefs.putString("pair", pairingCode); }
 
-  claimed = prefs.getBool("claimed", false);
-
-  if (RESTORE_OUTPUT) {
-    outputOn = prefs.getBool("out", false);
-  }
+  claimed   = prefs.getBool("claimed", false);
+  mqttHost  = prefs.getString("mqttHost", "192.168.1.10");
+  mqttPort  = prefs.getInt("mqttPort", 1883);
+  if (RESTORE_OUTPUT) ssrDorit = prefs.getBool("out", false);
 
   prefs.end();
 
-  String base = "stabilizator/" + deviceId;
-  tTelemetry = base + "/telemetrie";
-  tStatus    = base + "/status";
-  tInfo      = base + "/info";
-  tCommand   = base + "/comanda";
-  tClaimed   = base + "/claimed";
+  buildTopics();
+  strncpy(wmHost, mqttHost.c_str(), sizeof(wmHost) - 1);
+  snprintf(wmPort, sizeof(wmPort), "%d", mqttPort);
 
-  // PROVISIONING (one-time, on the Pi): create the broker account for this
-  // device:  sudo mosquitto_passwd /etc/mosquitto/passwd <deviceId>
+  // PROVISIONING (once, on the Pi): create the broker account for this device:
+  //   sudo mosquitto_passwd /etc/mosquitto/passwd <deviceId>
   // and use the secret below as its password.
   Serial.println(F("=== DEVICE IDENTITY ==="));
   Serial.println("deviceId (MQTT user) : " + deviceId);
   Serial.println("secret (MQTT pass)   : " + deviceSecret);
   Serial.println("pairing code         : " + pairingCode);
+  Serial.println("MQTT broker          : " + mqttHost + ":" + String(mqttPort));
   Serial.println(F("======================="));
 }
 
-/** Called when the backend releases the device: old code must die. */
+/** Backend released the device: the old code must die. (network task) */
 void regeneratePairingCode() {
-  pairingCode = randomCode(6);
+  String fresh = randomCode(6);
+
+  xSemaphoreTake(pairMutex, portMAX_DELAY);
+  pairingCode = fresh;
+  xSemaphoreGive(pairMutex);
+
+  xSemaphoreTake(nvsMutex, portMAX_DELAY);
   prefs.begin("stab", false);
-  prefs.putString("pair", pairingCode);
+  prefs.putString("pair", fresh);
   prefs.putBool("claimed", false);
   prefs.end();
+  xSemaphoreGive(nvsMutex);
+
   claimed = false;
-}
-
-// ============================ SENSORS ============================
-
-// RMS of the AC component at an ADC pin [V], over ~5 mains cycles (50 Hz).
-// Single-pass variance: RMS^2 = mean(x^2) - mean(x)^2 (removes DC offset).
-float readAcRms(int pin) {
-  const int N = 1000;
-  const int sampleDelayUs = 100;      // ~100 ms total
-  double sum = 0, sumSq = 0;
-
-  for (int i = 0; i < N; i++) {
-    double v = (double)analogRead(pin) * ADC_VREF / ADC_MAX;
-    sum += v;
-    sumSq += v * v;
-    delayMicroseconds(sampleDelayUs);
-  }
-
-  double mean = sum / N;
-  double var = sumSq / N - mean * mean;
-  if (var < 0) var = 0;
-  return (float)sqrt(var);
-}
-
-void readSensors() {
-  vIn  = readAcRms(PIN_VIN)  * CAL_VIN;
-  vOut = readAcRms(PIN_VOUT) * CAL_VOUT;
-
-  float acAtPin = readAcRms(PIN_ILOAD);
-  float acAtAcs = acAtPin / DIVIDER_RATIO;   // undo the divider
-  iLoad = acAtAcs / ACS_SENS;                // to amps
-  if (iLoad < I_NOISE_FLOOR) iLoad = 0;
-
-  powerW = vOut * iLoad;                     // apparent power [VA ~ W resistive]
-}
-
-// ============================ MOTOR (BTS7960) ============================
-
-void motorStop() {
-  analogWrite(PIN_RPWM, 0);
-  analogWrite(PIN_LPWM, 0);
-}
-
-void motorRun(bool raiseOutput, int duty) {
-  digitalWrite(PIN_MEN, HIGH);
-  bool forward = raiseOutput != INVERT_MOTOR;
-  analogWrite(PIN_RPWM, forward ? duty : 0);
-  analogWrite(PIN_LPWM, forward ? 0 : duty);
-}
-
-/**
- * Deadband regulation with proportional speed and stall protection:
- * creep near the target, full speed when far away.
- */
-void controlLoop() {
-  float error = TARGET_V - vOut;     // >0 -> output too low -> raise
-  int wanted = 0;                    // 0 stop, 1 raise, 2 lower
-
-  if (vIn < VIN_MIN_OK)              wanted = 0;   // no mains -> stay put
-  else if (error >  DEADBAND_V)      wanted = 1;
-  else if (error < -DEADBAND_V)      wanted = 2;
-
-  int duty = 0;
-  if (wanted != 0) {
-    long magnitude = (long)fabs(error);
-    magnitude = constrain(magnitude, (long)DEADBAND_V, (long)MAX_ERROR_V);
-    duty = map(magnitude, (long)DEADBAND_V, (long)MAX_ERROR_V, DUTY_MIN, DUTY_MAX);
-  }
-
-  if (wanted != lastDirection) {     // new intent -> restart the stall timer
-    directionSince = millis();
-    stalled = false;
-  }
-  if (wanted != 0 && millis() - directionSince > MAX_RUN_MS) {
-    stalled = true;                  // ran too long without reaching the band
-  }
-  lastDirection = wanted;
-
-  int applied = stalled ? 0 : wanted;
-
-  switch (applied) {
-    case 1:  motorRun(true, duty);  break;
-    case 2:  motorRun(false, duty); break;
-    default: motorStop();           break;
-  }
 }
 
 // ============================ SSR ============================
 
-void setOutput(bool on) {
-  outputOn = on;
-  digitalWrite(PIN_SSR, on ? HIGH : LOW);
-
+void ssrScrie(bool on) {
+  ssrStareReala = on;
+  digitalWrite(PIN_SSR, (on == SSR_ACTIV_HIGH) ? HIGH : LOW);
+}
+void setOutputDorit(bool on) {
+  ssrDorit = on;
   if (RESTORE_OUTPUT) {
-    prefs.begin("stab", false);
-    prefs.putBool("out", on);
-    prefs.end();
+    xSemaphoreTake(nvsMutex, portMAX_DELAY);
+    prefs.begin("stab", false); prefs.putBool("out", on); prefs.end();
+    xSemaphoreGive(nvsMutex);
   }
 }
 
-// ============================ OLED ============================
+// ============================ MOTOR PWM (LEDC) ============================
 
-void oledPairingScreen() {
-  if (!oledOk) return;
-  oled.clearDisplay();
-  oled.setTextColor(SSD1306_WHITE);
-  oled.setTextSize(1);
-  oled.setCursor(0, 0);  oled.println(F("Pair in the web app:"));
-  oled.setTextSize(2);
-  oled.setCursor(10, 18); oled.println(pairingCode);
-  oled.setTextSize(1);
-  oled.setCursor(0, 44); oled.print(F("ID: ")); oled.println(deviceId.substring(6));
-  oled.setCursor(0, 54);
-  oled.print(WiFi.isConnected() ? F("WiFi OK") : F("WiFi..."));
-  oled.print(mqtt.connected() ? F("  MQTT OK") : F("  MQTT..."));
-  oled.display();
+void setDutyCycle(int percent) {
+  percent = constrain(percent, 0, 100);
+  dutyAplicat = percent;
+  int d = map(percent, 0, 100, 0, PWM_MAX);
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcWrite(L_PWM, PWM_MAX - d);
+  ledcWrite(R_PWM, d);
+#else
+  ledcWrite(0, PWM_MAX - d);
+  ledcWrite(1, d);
+#endif
+}
+void pwmInit() {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcAttach(L_PWM, PWM_FREQ, PWM_RES);
+  ledcAttach(R_PWM, PWM_FREQ, PWM_RES);
+#else
+  ledcSetup(0, PWM_FREQ, PWM_RES); ledcAttachPin(L_PWM, 0);
+  ledcSetup(1, PWM_FREQ, PWM_RES); ledcAttachPin(R_PWM, 1);
+#endif
+}
+void motorMove(int percent) {
+  digitalWrite(L_EN, HIGH); digitalWrite(R_EN, HIGH);
+  setDutyCycle(percent);
+}
+void motorStop() {
+  setDutyCycle(50);
+  if (ENABLE_OFF_WHEN_STABLE) { digitalWrite(L_EN, LOW); digitalWrite(R_EN, LOW); }
+}
+int dutyReglaj(float eroare) {
+  long mag = (long)constrain(fabs(eroare), BANDA, EROARE_MAX);
+  long step = map(mag, (long)BANDA, (long)EROARE_MAX, STEP_MIN, STEP_MAX);
+  bool crestem = (eroare > 0);
+  bool spre100 = crestem ? !INVERSEAZA : INVERSEAZA;
+  return spre100 ? (50 + step) : (50 - step);
 }
 
-void oledLiveScreen() {
-  if (!oledOk) return;
-  oled.clearDisplay();
-  oled.setTextColor(SSD1306_WHITE);
-  oled.setTextSize(1);
-  oled.setCursor(0, 0);  oled.print(F("IN : ")); oled.print(vIn, 0);  oled.println(F(" V"));
-  oled.setCursor(0, 12); oled.print(F("OUT: ")); oled.print(vOut, 0); oled.println(F(" V"));
-  oled.setCursor(0, 24); oled.print(F("I  : ")); oled.print(iLoad, 2); oled.println(F(" A"));
-  oled.setCursor(0, 36); oled.print(F("P  : ")); oled.print(powerW, 0); oled.println(F(" W"));
-  oled.setCursor(0, 52);
-  oled.print(outputOn ? F("OUT ON ") : F("OUT OFF"));
-  oled.print(stalled ? F(" LIMIT") : F(""));
-  oled.print(mqtt.connected() ? F(" online") : F(" ..."));
-  oled.display();
+// ============================ SENSORS ============================
+
+// RMS of the AC component at an ADC pin, in raw counts, over FEREASTRA_US.
+float citesteRMS(int pin) {
+  uint32_t t0 = micros(); double sum = 0, sumSq = 0; uint32_t n = 0;
+  while (micros() - t0 < FEREASTRA_US) { int r = analogRead(pin); sum += r; sumSq += (double)r * r; n++; }
+  if (n == 0) return 0;
+  double mean = sum / n, var = sumSq / n - mean * mean; if (var < 0) var = 0;
+  return (float)sqrt(var);
+}
+
+void readSensors() {
+  float adcIn = citesteRMS(PIN_VIN), adcOut = citesteRMS(PIN_VOUT), adcI = citesteRMS(PIN_ILOAD);
+  adcInRms_last = adcIn; adcOutRms_last = adcOut; adcIloadRms_last = adcI;
+
+  vin  = adcIn  * CAL_VIN;
+  vout = adcOut * CAL_VOUT;
+  vinFilt  = (vinFilt == 0)  ? vin  : 0.7f * vinFilt  + 0.3f * vin;
+  voutFilt = (voutFilt == 0) ? vout : 0.7f * voutFilt + 0.3f * vout;
+
+  iLoad = adcI * CAL_I;
+  if (iLoad < I_NOISE_FLOOR) iLoad = 0;
+  powerW = voutFilt * iLoad;   // apparent power [VA ~ W resistive]
 }
 
 // ============================ MQTT ============================
 
 void publishInfo() {
   StaticJsonDocument<128> doc;
-  if (!claimed) doc["pair"] = pairingCode;   // never expose the code once claimed
+  if (!claimed) {                            // never expose the code once claimed
+    xSemaphoreTake(pairMutex, portMAX_DELAY);
+    String code = pairingCode;
+    xSemaphoreGive(pairMutex);
+    doc["pair"] = code;
+  }
   doc["fw"] = FW_VERSION;
-
   char buffer[128];
   size_t n = serializeJson(doc, buffer);
   mqtt.publish(tInfo.c_str(), (uint8_t*)buffer, n, true);   // retained
@@ -347,22 +350,20 @@ void publishInfo() {
 
 void publishTelemetry() {
   StaticJsonDocument<192> doc;
-  doc["vin"]  = roundf(vIn * 10) / 10.0f;
-  doc["vout"] = roundf(vOut * 10) / 10.0f;
+  doc["vin"]  = roundf(vinFilt * 10) / 10.0f;
+  doc["vout"] = roundf(voutFilt * 10) / 10.0f;
   doc["i"]    = roundf(iLoad * 100) / 100.0f;
   doc["p"]    = roundf(powerW * 10) / 10.0f;
-  doc["e"]    = roundf(energyWh / 10.0) / 100.0;   // kWh with 2 decimals
-  doc["out"]  = outputOn ? 1 : 0;
+  doc["e"]    = roundf(energyWh / 10.0) / 100.0;   // kWh, 2 decimals
+  doc["out"]  = ssrStareReala ? 1 : 0;
   doc["fw"]   = FW_VERSION;
-
   char buffer[192];
   size_t n = serializeJson(doc, buffer);
   mqtt.publish(tTelemetry.c_str(), (uint8_t*)buffer, n, false);
 }
 
 void onMqttMessage(char* topic, byte* payload, unsigned int length) {
-  String t(topic);
-  String msg;
+  String t(topic), msg;
   msg.reserve(length);
   for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
 
@@ -371,26 +372,22 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
     if (deserializeJson(doc, msg) == DeserializationError::Ok) {
       const char* output = doc["output"] | "";
       bool changed = false;
-
-      if (strcmp(output, "on") == 0 && !outputOn)  { setOutput(true);  changed = true; }
-      if (strcmp(output, "off") == 0 && outputOn)  { setOutput(false); changed = true; }
-
-      if (changed) {
-        publishTelemetry();          // instant feedback for the dashboard
-        lastTelemetry = millis();
-      }
+      if (strcmp(output, "on") == 0  && !ssrDorit) { setOutputDorit(true);  changed = true; }
+      if (strcmp(output, "off") == 0 &&  ssrDorit) { setOutputDorit(false); changed = true; }
+      // Instant dashboard feedback. SSR safety gating still happens on core 1,
+      // so "out" here reflects the request; the next periodic frame confirms it.
+      if (changed && mqtt.connected()) publishTelemetry();
     }
     return;
   }
 
   if (t == tClaimed) {
     bool nowClaimed = (msg == "true" || msg == "1");
-
     if (nowClaimed && !claimed) {
       claimed = true;
-      prefs.begin("stab", false);
-      prefs.putBool("claimed", true);
-      prefs.end();
+      xSemaphoreTake(nvsMutex, portMAX_DELAY);
+      prefs.begin("stab", false); prefs.putBool("claimed", true); prefs.end();
+      xSemaphoreGive(nvsMutex);
       publishInfo();                 // info without the pairing code
     } else if (!nowClaimed && claimed) {
       regeneratePairingCode();       // released: fresh code, show it again
@@ -401,7 +398,6 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
 
 void mqttConnect() {
   if (mqtt.connected()) return;
-
   Serial.print(F("MQTT connecting... "));
 
   // LWT: if we vanish, the broker publishes retained "offline" for us.
@@ -411,97 +407,284 @@ void mqttConnect() {
     deviceSecret.c_str(),             // MQTT pass = device secret
     tStatus.c_str(), 1, true, "offline");
 
-  if (!ok) {
-    Serial.print(F("failed, rc="));
-    Serial.println(mqtt.state());
-    return;
-  }
+  if (!ok) { Serial.print(F("failed, rc=")); Serial.println(mqtt.state()); netConnected = false; return; }
 
   Serial.println(F("connected"));
   mqtt.publish(tStatus.c_str(), "online", true);    // retained
   publishInfo();
   mqtt.subscribe(tCommand.c_str(), 1);
   mqtt.subscribe(tClaimed.c_str(), 1);
+  netConnected = true;
 }
 
-// ============================ SETUP / LOOP ============================
+// ============================ NETWORK TASK (core 0) ============================
+// Everything that can block on I/O lives here, OFF the control loop. The captive
+// portal, WiFi (re)connects and MQTT (re)connects never stall the regulation on
+// core 1 - that is the whole point of the "works with or without network" claim.
+
+void networkTask(void* arg) {
+  // Captive portal "Stabilizator-Setup": WiFi + broker IP/port. Blocks THIS task
+  // only (up to 180 s); core 1 keeps regulating the whole time.
+  WiFiManager wm;
+  WiFiManagerParameter pHost("host", "Raspberry Pi IP (MQTT)", wmHost, sizeof(wmHost));
+  WiFiManagerParameter pPort("port", "MQTT port", wmPort, sizeof(wmPort));
+  wm.addParameter(&pHost);
+  wm.addParameter(&pPort);
+  wm.setSaveConfigCallback(wmSaveCallback);
+  wm.setConfigPortalTimeout(180);
+
+  bool wifiOk = wm.autoConnect("Stabilizator-Setup");
+
+  if (wmShouldSave) {                       // user (re)entered the broker fields
+    mqttHost = pHost.getValue();
+    mqttPort = atoi(pPort.getValue());
+    if (mqttPort <= 0) mqttPort = 1883;
+    xSemaphoreTake(nvsMutex, portMAX_DELAY);
+    prefs.begin("stab", false);
+    prefs.putString("mqttHost", mqttHost);
+    prefs.putInt("mqttPort", mqttPort);
+    prefs.end();
+    xSemaphoreGive(nvsMutex);
+    Serial.println("Saved broker: " + mqttHost + ":" + String(mqttPort));
+  }
+
+  if (!wifiOk) Serial.println(F("WiFi not configured - running offline, will retry"));
+
+  mqtt.setServer(mqttHost.c_str(), mqttPort);
+  mqtt.setSocketTimeout(2);                 // a dead broker blocks 2 s, not 15
+  mqtt.setCallback(onMqttMessage);
+
+  uint32_t lastMqttAttempt = 0, lastTelemetry = millis(), lastWifiRetry = 0;
+
+  for (;;) {
+    if (WiFi.status() != WL_CONNECTED) {
+      netConnected = false;
+      if (millis() - lastWifiRetry > 5000) { lastWifiRetry = millis(); WiFi.reconnect(); }
+    } else if (!mqtt.connected()) {
+      netConnected = false;
+      if (millis() - lastMqttAttempt > 3000) { lastMqttAttempt = millis(); mqttConnect(); }
+    } else {
+      mqtt.loop();
+    }
+
+    if (mqtt.connected() && millis() - lastTelemetry >= T_TELEMETRY_MS) {
+      lastTelemetry = millis();
+      publishTelemetry();
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(50));          // yield; control loop is independent
+  }
+}
+
+// ============================ SERIAL ============================
+
+void printHelp() {
+  Serial.println();
+  Serial.println(F("=== STABILIZER - commands ==="));
+  Serial.println(F("  auto / manual"));
+  Serial.println(F("  up/down/stop (manual) | <0..100> (manual)"));
+  Serial.println(F("  out_on / out_off  (output relay / SSR)"));
+  Serial.println(F("  in <V> | out <V> | cur <A>  (calibration)"));
+  Serial.println(F("  net   (network/MQTT info) | show"));
+  Serial.printf ("  TARGET=%.0fV | CAL_VIN=%.4f CAL_VOUT=%.4f CAL_I=%.4f | mode=%s | SSR=%s\n",
+                 TINTA, CAL_VIN, CAL_VOUT, CAL_I, autoMode ? "AUTO" : "MANUAL", ssrDorit ? "ON" : "OFF");
+  Serial.println(F("=============================="));
+}
+
+void printNet() {
+  Serial.printf("WiFi: %s (%s, RSSI %d)  MQTT: %s @ %s:%d\n",
+                WiFi.isConnected() ? "OK" : "...",
+                WiFi.localIP().toString().c_str(), WiFi.RSSI(),
+                netConnected ? "connected" : "down",
+                mqttHost.c_str(), mqttPort);
+  xSemaphoreTake(pairMutex, portMAX_DELAY);
+  String code = pairingCode;
+  xSemaphoreGive(pairMutex);
+  Serial.println("deviceId: " + deviceId + " | claimed: " + (claimed ? "yes" : "no") +
+                 " | pair: " + (claimed ? "-" : code));
+}
+
+void handleSerial() {
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n' || c == '\r') {
+      buf.trim(); buf.toLowerCase();
+      if (buf.length() == 0) {}
+      else if (buf == "show" || buf == "?") printHelp();
+      else if (buf == "net") printNet();
+      else if (buf == "auto")   { autoMode = true;  Serial.println(F(">> AUTO")); }
+      else if (buf == "manual") { autoMode = false; manualActiv = false; motorStop(); Serial.println(F(">> MANUAL (stop)")); }
+      else if (buf == "up")   { if (autoMode) Serial.println(F(">> in AUTO; type 'manual'")); else { manualActiv = true; manualStart = millis(); motorMove(100); Serial.println(F(">> UP 100%")); } }
+      else if (buf == "down") { if (autoMode) Serial.println(F(">> in AUTO; type 'manual'")); else { manualActiv = true; manualStart = millis(); motorMove(0);   Serial.println(F(">> DOWN 0%")); } }
+      else if (buf == "stop") { manualActiv = false; motorStop(); Serial.println(F(">> STOP")); }
+      else if (buf == "out_on")  { setOutputDorit(true);  Serial.println(F(">> SSR: ON (output energized)")); }
+      else if (buf == "out_off") { setOutputDorit(false); Serial.println(F(">> SSR: OFF (output de-energized)")); }
+      else {
+        int sp = buf.indexOf(' ');
+        if (sp > 0) {
+          String cmd = buf.substring(0, sp); float v = buf.substring(sp + 1).toFloat();
+          if (cmd == "in")  { if (adcInRms_last < 5) Serial.println(F(">> IN too low.")); else if (v <= 0) Serial.println(F(">> invalid.")); else { CAL_VIN = v / adcInRms_last; Serial.printf(">> CAL_VIN=%.4f\n", CAL_VIN); } }
+          else if (cmd == "out") { if (adcOutRms_last < 5) Serial.println(F(">> OUT too low.")); else if (v <= 0) Serial.println(F(">> invalid.")); else { CAL_VOUT = v / adcOutRms_last; Serial.printf(">> CAL_VOUT=%.4f\n", CAL_VOUT); } }
+          else if (cmd == "cur") { if (adcIloadRms_last < 2) Serial.println(F(">> I too low (apply a load).")); else if (v <= 0) Serial.println(F(">> invalid.")); else { CAL_I = v / adcIloadRms_last; Serial.printf(">> CAL_I=%.4f\n", CAL_I); } }
+          else Serial.println(F(">> unknown. 'show'."));
+        } else if (isDigit(buf[0])) {
+          if (autoMode) Serial.println(F(">> in AUTO; type 'manual'"));
+          else { int val = constrain(buf.toInt(), 0, 100); manualStart = millis();
+                 if (val == 50) { manualActiv = false; motorStop(); } else { manualActiv = true; motorMove(val); }
+                 Serial.printf(">> duty %d%%\n", val); }
+        } else Serial.println(F(">> unknown. 'show'."));
+      }
+      buf = "";
+    } else { buf += c; if (buf.length() > 30) buf = ""; }
+  }
+}
+
+// ============================ OLED ============================
+
+void oledPairingScreen() {
+  if (!oledOk) return;
+  xSemaphoreTake(pairMutex, portMAX_DELAY);
+  String code = pairingCode;
+  xSemaphoreGive(pairMutex);
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1); display.setCursor(0, 0);  display.println(F("Pair in the web app:"));
+  display.setTextSize(2); display.setCursor(10, 18); display.println(code);
+  display.setTextSize(1); display.setCursor(0, 44); display.print(F("ID: ")); display.println(deviceId.substring(6));
+  display.setCursor(0, 54);
+  display.print(WiFi.isConnected() ? F("WiFi OK") : F("WiFi..."));
+  display.print(netConnected ? F("  MQTT OK") : F("  MQTT..."));
+  display.display();
+}
+
+void oledLiveScreen(const char* stare) {
+  if (!oledOk) return;
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1); display.setCursor(0, 0); display.printf("TARGET %.0fV", TINTA);
+  display.setCursor(92, 0); display.print(ssrStareReala ? "OUT:ON" : "OUT:--");
+  display.drawFastHLine(0, 10, SCREEN_WIDTH, SSD1306_WHITE);
+  display.setTextSize(2);
+  display.setCursor(0, 14); display.printf("IN %4.0fV", vinFilt);
+  display.setCursor(0, 34); display.printf("OUT%4.0fV", voutFilt);
+  display.setTextSize(1); display.setCursor(0, 56);
+  display.print(stare);
+  display.setCursor(92, 56); display.print(netConnected ? "NET" : "...");
+  display.display();
+}
+
+// ============================ SETUP ============================
 
 void setup() {
-  Serial.begin(115200);
-  delay(200);
+  Serial.begin(115200); delay(200);
 
-  pinMode(PIN_RPWM, OUTPUT);
-  pinMode(PIN_LPWM, OUTPUT);
-  pinMode(PIN_MEN, OUTPUT);
-  pinMode(PIN_SSR, OUTPUT);
-  digitalWrite(PIN_MEN, LOW);
-  motorStop();
+  nvsMutex  = xSemaphoreCreateMutex();
+  pairMutex = xSemaphoreCreateMutex();
+
+  pinMode(PIN_SSR, OUTPUT); ssrScrie(false);            // SSR off at boot
+  pinMode(L_EN, OUTPUT); pinMode(R_EN, OUTPUT);
+  digitalWrite(L_EN, HIGH); digitalWrite(R_EN, HIGH);
+  pwmInit(); setDutyCycle(50);
 
   analogReadResolution(12);
+  analogSetPinAttenuation(PIN_VIN,   ADC_11db);
+  analogSetPinAttenuation(PIN_VOUT,  ADC_11db);
+  analogSetPinAttenuation(PIN_ILOAD, ADC_11db);
 
   Wire.begin(PIN_SDA, PIN_SCL);
-  oledOk = oled.begin(SSD1306_SWITCHCAPVCC, 0x3C);   // some modules use 0x3D
+  oledOk = display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR);
+  if (!oledOk) Serial.println(F("OLED not found (0x3C/0x3D?)."));
   if (oledOk) {
-    oled.clearDisplay();
-    oled.setTextColor(SSD1306_WHITE);
-    oled.setTextSize(1);
-    oled.setCursor(0, 0);
-    oled.println(F("StabilizatorHub VRG"));
-    oled.println(F("booting..."));
-    oled.display();
+    display.clearDisplay(); display.setTextColor(SSD1306_WHITE);
+    display.setTextSize(1); display.setCursor(0, 0);
+    display.println(F("StabilizatorHub VRG")); display.println(F("booting..."));
+    display.display();
   }
 
   WiFi.mode(WIFI_STA);
   loadIdentity();
-  setOutput(outputOn);               // applies the (restored or off) SSR state
 
-  // Captive portal "Stabilizator-Setup" when no WiFi credentials are stored.
-  WiFiManager wm;
-  wm.setConfigPortalTimeout(180);
-  if (!wm.autoConnect("Stabilizator-Setup")) {
-    Serial.println(F("WiFi not configured - restarting"));
-    delay(2000);
-    ESP.restart();
-  }
+  lastEnergyTick = millis();
 
-  mqtt.setServer(MQTT_HOST, MQTT_PORT);
-  mqtt.setCallback(onMqttMessage);
-
-  lastTelemetry = millis();          // first telemetry after one full interval
+  // Network (WiFi portal + MQTT) runs on core 0 so it can never block the
+  // control loop, which stays real-time on core 1 (the Arduino loop()).
+  xTaskCreatePinnedToCore(networkTask, "net", 8192, nullptr, 1, &netTaskHandle, 0);
 }
 
+// ============================ LOOP ============================
+
 void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    WiFi.reconnect();
-    delay(500);
+  static int      ultimaDir = 0;
+  static uint32_t startDir = 0;
+  static bool     stall = false;
+  static bool     stabil = false;
+
+  // Network (WiFi/MQTT) is handled by networkTask on core 0 - never here, so
+  // the regulation below stays real-time even with the broker down or absent.
+
+  // --- sensors + serial ---
+  readSensors();
+  handleSerial();
+
+  // --- SSR: on only if wanted AND mains present (safety), after the grace ---
+  bool retea = (vinFilt >= VIN_MIN_OK);
+  bool ssrFinal = ssrDorit && retea && (millis() >= BOOT_GRACE_MS);
+  if (ssrFinal != ssrStareReala) ssrScrie(ssrFinal);
+
+  if (millis() < BOOT_GRACE_MS) { motorStop(); if (oledOk) oledLiveScreen("init..."); return; }
+
+  const char* stare;
+
+  if (!autoMode) {
+    if (manualActiv && millis() - manualStart > MANUAL_MAX_MS) { motorStop(); manualActiv = false; Serial.println(F(">> manual: auto-stopped")); }
+    stare = manualActiv ? "MANUAL  ON" : "MANUAL  stop";
+  } else {
+    float eroare = TINTA - voutFilt, ae = fabs(eroare);
+    if (stabil) { if (ae > BANDA + HISTEREZA) stabil = false; }
+    else        { if (ae <= BANDA)            stabil = true;  }
+
+    int dir;
+    if (!retea)      dir = 0;
+    else if (stabil) dir = 0;
+    else             dir = (eroare > 0) ? 1 : -1;
+
+    if (dir != ultimaDir) { startDir = millis(); stall = false; }
+    if (dir != 0 && millis() - startDir > MAX_RUN_MS) stall = true;
+    ultimaDir = dir;
+
+    if (dir == 0 || stall) motorStop();
+    else                   motorMove(dutyReglaj(eroare));
+
+    if (!retea)      stare = "NO MAINS";
+    else if (stall)  stare = "LIMIT";
+    else if (dir == 1)  stare = "ADJUST +";
+    else if (dir == -1) stare = "ADJUST -";
+    else             stare = "STABLE  OK";
   }
 
-  static unsigned long lastMqttAttempt = 0;
-  if (!mqtt.connected() && millis() - lastMqttAttempt > 3000) {
-    lastMqttAttempt = millis();
-    mqttConnect();                   // non-blocking retry every 3 s
-  }
-  mqtt.loop();
+  // --- energy integration (control task owns it; networkTask only reads it) ---
+  uint32_t now = millis();
+  double dtHours = (now - lastEnergyTick) / 3600000.0;
+  lastEnergyTick = now;
+  energyWh = energyWh + (float)(powerW * dtHours);
 
-  unsigned long now = millis();
-
-  // Regulation always runs - local fail-safe, with or without the server.
-  if (now - lastControl >= T_CONTROL_MS) {
-    lastControl = now;
-    readSensors();
-    if (now >= BOOT_GRACE_MS) controlLoop(); else motorStop();
-  }
-
-  // Telemetry + local energy integration every 60 s.
-  if (now - lastTelemetry >= T_TELEMETRY_MS) {
-    double hours = (now - lastTelemetry) / 3600000.0;
-    energyWh += powerW * hours;
-    lastTelemetry = now;
-    if (mqtt.connected()) publishTelemetry();
-  }
-
+  // --- OLED ---
   if (now - lastOled >= T_OLED_MS) {
     lastOled = now;
-    if (claimed) oledLiveScreen(); else oledPairingScreen();
+    if (claimed) {
+      oledLiveScreen(stare);
+    } else {
+      // Unclaimed: alternate the pairing code with live voltages every 4 s,
+      // so the readings are visible during bench testing too.
+      if ((now / 4000) % 2 == 0) oledPairingScreen();
+      else                       oledLiveScreen(stare);
+    }
   }
+
+  Serial.printf("IN:%6.1fV | OUT:%6.1fV | I:%5.2fA | P:%6.1fW | %-11s | duty=%d%% | SSR=%s | %s | NET=%s\n",
+                vinFilt, voutFilt, iLoad, powerW, stare, dutyAplicat,
+                ssrStareReala ? "ON" : "OFF", autoMode ? "AUTO" : "MANUAL",
+                netConnected ? "up" : "down");
+  delay(20);
 }
