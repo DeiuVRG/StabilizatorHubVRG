@@ -2,7 +2,6 @@
 // The device is the source of truth: the switch settles only when the new
 // state comes back through telemetry/status (or reverts on timeout).
 import { api, toast } from './api.js';
-import { confirmDialog } from './modal.js';
 
 const PENDING_TIMEOUT_MS = 20000;
 
@@ -25,20 +24,8 @@ export function initControl(deviceIdProvider) {
   relaySwitch().addEventListener('change', async event => {
     const wantedOn = event.target.checked;
 
-    // Error prevention: switching the output affects a real appliance.
-    const confirmed = await confirmDialog({
-      title: wantedOn ? 'Turn output ON?' : 'Turn output OFF?',
-      text: wantedOn
-        ? 'The SSR closes and the connected appliance receives power.'
-        : 'The SSR opens and the connected appliance loses power.',
-      confirmText: wantedOn ? 'Turn ON' : 'Turn OFF'
-    });
-
-    if (!confirmed) {
-      event.target.checked = lastKnownState;
-      return;
-    }
-
+    // No confirmation dialog: the switch acts immediately and settles on the
+    // real device state (or reverts on timeout).
     setPending(true, wantedOn);
 
     try {

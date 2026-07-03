@@ -70,11 +70,22 @@ public sealed class TelemetryIngestionService : ITelemetryIngestionService
             device.OutputOn = sample.OutputOn.Value;
         }
 
-        var energyWh = EnergyCalculator.IntervalWattHours(
-            sample.PowerWatts,
-            device.LastTelemetryUtc,
-            sample.TimestampUtc,
-            TimeSpan.FromMinutes(_telemetryOptions.MaxEnergyGapMinutes));
+        // Store at most one reading per minute. Extra frames (relay command echo,
+        // reconnect) still refresh the live UI below but are not written to
+        // history, keeping the stored series at ~1-minute resolution. Energy is
+        // integrated over the gap since the last STORED reading, so nothing is
+        // lost when intermediate frames are skipped.
+        var shouldPersist = device.LastTelemetryUtc is null
+            || sample.TimestampUtc - device.LastTelemetryUtc.Value
+               >= TimeSpan.FromSeconds(_telemetryOptions.MinPersistIntervalSeconds);
+
+        var energyWh = shouldPersist
+            ? EnergyCalculator.IntervalWattHours(
+                sample.PowerWatts,
+                device.LastTelemetryUtc,
+                sample.TimestampUtc,
+                TimeSpan.FromMinutes(_telemetryOptions.MaxEnergyGapMinutes))
+            : 0;
 
         var reading = new TelemetryReading
         {
@@ -88,14 +99,23 @@ public sealed class TelemetryIngestionService : ITelemetryIngestionService
             OutputOn = device.OutputOn
         };
 
-        await _telemetry.AddAsync(reading, ct);
-        device.LastTelemetryUtc = sample.TimestampUtc;
+        if (shouldPersist)
+        {
+            await _telemetry.AddAsync(reading, ct);
+            device.LastTelemetryUtc = sample.TimestampUtc;
+        }
 
         var changedEvents = await ApplyVoltageTransitionsAsync(device.Id, sample, ct);
 
         await _unitOfWork.SaveChangesAsync(ct);
 
-        await AppendEncryptedLogAsync(sample, energyWh, ct);
+        // The live broadcast always fires (instant relay feedback + live tiles);
+        // the encrypted history log follows the same 1-minute cadence as the DB.
+        if (shouldPersist)
+        {
+            await AppendEncryptedLogAsync(sample, energyWh, ct);
+        }
+
         await BroadcastAsync(device, reading, changedEvents, cameOnline, ct);
     }
 
