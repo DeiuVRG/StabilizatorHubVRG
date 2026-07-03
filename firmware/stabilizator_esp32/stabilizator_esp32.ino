@@ -242,6 +242,9 @@ void loadIdentity() {
   mqttPort  = prefs.getInt("mqttPort", MQTT_PORT_DEFAULT);
   mqttUser  = prefs.getString("mqttUser", "");
   mqttPass  = prefs.getString("mqttPass", "");
+  CAL_VIN   = prefs.getFloat("calVin",  CAL_VIN);   // persisted calibration
+  CAL_VOUT  = prefs.getFloat("calVout", CAL_VOUT);  // (falls back to the
+  CAL_I     = prefs.getFloat("calI",    CAL_I);     //  compile-time defaults)
   if (RESTORE_OUTPUT) ssrDorit = prefs.getBool("out", false);
 
   prefs.end();
@@ -518,6 +521,17 @@ void networkTask(void* arg) {
 
 // ============================ SERIAL ============================
 
+// Persist the three calibration factors to NVS so they survive reboot/reflash.
+void saveCalibration() {
+  xSemaphoreTake(nvsMutex, portMAX_DELAY);
+  prefs.begin("stab", false);
+  prefs.putFloat("calVin",  CAL_VIN);
+  prefs.putFloat("calVout", CAL_VOUT);
+  prefs.putFloat("calI",    CAL_I);
+  prefs.end();
+  xSemaphoreGive(nvsMutex);
+}
+
 void printHelp() {
   Serial.println();
   Serial.println(F("=== STABILIZER - commands ==="));
@@ -563,9 +577,9 @@ void handleSerial() {
         int sp = buf.indexOf(' ');
         if (sp > 0) {
           String cmd = buf.substring(0, sp); float v = buf.substring(sp + 1).toFloat();
-          if (cmd == "in")  { if (adcInRms_last < 5) Serial.println(F(">> IN too low.")); else if (v <= 0) Serial.println(F(">> invalid.")); else { CAL_VIN = v / adcInRms_last; Serial.printf(">> CAL_VIN=%.4f\n", CAL_VIN); } }
-          else if (cmd == "out") { if (adcOutRms_last < 5) Serial.println(F(">> OUT too low.")); else if (v <= 0) Serial.println(F(">> invalid.")); else { CAL_VOUT = v / adcOutRms_last; Serial.printf(">> CAL_VOUT=%.4f\n", CAL_VOUT); } }
-          else if (cmd == "cur") { if (adcIloadRms_last < 2) Serial.println(F(">> I too low (apply a load).")); else if (v <= 0) Serial.println(F(">> invalid.")); else { CAL_I = v / adcIloadRms_last; Serial.printf(">> CAL_I=%.4f\n", CAL_I); } }
+          if (cmd == "in")  { if (adcInRms_last < 5) Serial.println(F(">> IN too low.")); else if (v <= 0) Serial.println(F(">> invalid.")); else { CAL_VIN = v / adcInRms_last; saveCalibration(); Serial.printf(">> CAL_VIN=%.4f (saved)\n", CAL_VIN); } }
+          else if (cmd == "out") { if (adcOutRms_last < 5) Serial.println(F(">> OUT too low.")); else if (v <= 0) Serial.println(F(">> invalid.")); else { CAL_VOUT = v / adcOutRms_last; saveCalibration(); Serial.printf(">> CAL_VOUT=%.4f (saved)\n", CAL_VOUT); } }
+          else if (cmd == "cur") { if (adcIloadRms_last < 2) Serial.println(F(">> I too low (apply a load).")); else if (v <= 0) Serial.println(F(">> invalid.")); else { CAL_I = v / adcIloadRms_last; saveCalibration(); Serial.printf(">> CAL_I=%.4f (saved)\n", CAL_I); } }
           else Serial.println(F(">> unknown. 'show'."));
         } else if (isDigit(buf[0])) {
           if (autoMode) Serial.println(F(">> in AUTO; type 'manual'"));
