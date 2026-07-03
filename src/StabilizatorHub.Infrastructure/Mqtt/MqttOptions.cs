@@ -12,6 +12,9 @@ public sealed class MqttOptions
 
     public int Port { get; set; } = 1883;
 
+    /// <summary>Enable TLS - required by cloud brokers such as HiveMQ Cloud (port 8883).</summary>
+    public bool UseTls { get; set; } = false;
+
     /// <summary>Broker user of the backend (full access to stabilizator/# per the ACL).</summary>
     public string Username { get; set; } = "backend";
 

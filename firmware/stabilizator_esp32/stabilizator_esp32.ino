@@ -6,12 +6,16 @@
  *  LEDC motor drive, SSR, deadband regulation) and adds network connectivity:
  *
  *   - WiFi provisioning: WiFiManager captive portal "Stabilizator-Setup" on the
- *     first boot (or when the saved network is gone). The Raspberry Pi broker IP
- *     is ALSO entered there, so the Pi address can change without reflashing.
- *   - Device identity = WiFi MAC. The MQTT secret and the pairing code are
- *     generated once and stored in NVS (flash).
- *   - MQTT (Mosquitto on the Pi): telemetry every 60 s, remote on/off, the
- *     "online"/"offline" presence is published by the broker via LWT.
+ *     first boot (or when the saved network is gone). The cloud broker
+ *     host/port/username/password are ALSO entered there and kept in NVS, so the
+ *     device joins ANY WiFi/hotspot and needs no code change or reflash.
+ *   - Cloud MQTT over TLS: the ESP and the Raspberry Pi backend both dial OUT to
+ *     a cloud broker (HiveMQ Cloud, port 8883). The device therefore works from
+ *     anywhere, even on a different network than the Pi - no LAN IPs, no
+ *     port-forwarding. clientId = MAC; auth = the shared cloud broker account.
+ *   - Telemetry every 60 s, remote on/off, "online"/"offline" presence via LWT.
+ *   - Device identity = WiFi MAC (used in the topic tree and as clientId). The
+ *     pairing code is generated once and stored in NVS (flash).
  *   - Claiming: while unclaimed the pairing code is shown on the OLED (it
  *     alternates with the live voltage screen for bench testing); the backend
  *     publishes "claimed" true/false (retained). On "false" a FRESH pairing
@@ -58,6 +62,7 @@
  */
 
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <WiFiManager.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
@@ -69,6 +74,14 @@
 // ============================ CONFIG ============================
 
 #define FW_VERSION   "2.0.0"
+
+// --- MQTT broker (cloud, TLS) ---
+// The ESP and the Raspberry Pi backend both dial OUT to this broker, so the
+// device works from ANY WiFi/hotspot regardless of where the Pi is. The host is
+// not secret (safe to commit); the broker USERNAME/PASSWORD are entered once in
+// the WiFiManager captive portal and kept in NVS - never in git.
+#define MQTT_HOST_DEFAULT  "purpletawny-76e1ad92.a03.euc1.aws.hivemq.cloud"
+#define MQTT_PORT_DEFAULT  8883        // HiveMQ Cloud TLS port
 
 // --- OLED ---
 #define SCREEN_WIDTH 128
@@ -131,18 +144,20 @@ const bool RESTORE_OUTPUT = false;
 
 // ============================ GLOBALS ============================
 
-WiFiClient        net;
+WiFiClientSecure  net;              // TLS transport for the cloud broker
 PubSubClient      mqtt(net);
 Preferences       prefs;
 Adafruit_SSD1306  display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 bool oledOk = false;
 
 // identity / network (NVS)
-String deviceId;        // MAC without ":" (e.g. A1B2C3D4E5F6) == MQTT user
-String deviceSecret;    // MQTT password of this device
+String deviceId;        // MAC without ":" (e.g. A1B2C3D4E5F6) == topic id + clientId
+String deviceSecret;    // legacy per-device secret (kept for identity; not used for cloud auth)
 String pairingCode;     // shown on the OLED while unclaimed (guarded by pairMutex)
-String mqttHost = "192.168.1.10";
-int    mqttPort = 1883;
+String mqttHost = MQTT_HOST_DEFAULT;
+int    mqttPort = MQTT_PORT_DEFAULT;
+String mqttUser;        // cloud broker username (NVS, entered in the portal)
+String mqttPass;        // cloud broker password (NVS, entered in the portal)
 volatile bool claimed = false;
 
 String tTelemetry, tStatus, tInfo, tCommand, tClaimed;
@@ -172,8 +187,10 @@ int     dutyAplicat = 50;
 uint32_t lastOled = 0, lastEnergyTick = 0;
 
 // WiFiManager: extra fields for the broker (filled in the captive portal)
-char wmHost[40] = "192.168.1.10";
-char wmPort[8]  = "1883";
+char wmHost[64] = MQTT_HOST_DEFAULT;
+char wmPort[8]  = "8883";
+char wmUser[40] = "";
+char wmPass[64] = "";
 bool wmShouldSave = false;
 void wmSaveCallback() { wmShouldSave = true; }
 
@@ -214,8 +231,10 @@ void loadIdentity() {
   if (pairingCode == "") { pairingCode = randomCode(6); prefs.putString("pair", pairingCode); }
 
   claimed   = prefs.getBool("claimed", false);
-  mqttHost  = prefs.getString("mqttHost", "192.168.1.10");
-  mqttPort  = prefs.getInt("mqttPort", 1883);
+  mqttHost  = prefs.getString("mqttHost", MQTT_HOST_DEFAULT);
+  mqttPort  = prefs.getInt("mqttPort", MQTT_PORT_DEFAULT);
+  mqttUser  = prefs.getString("mqttUser", "");
+  mqttPass  = prefs.getString("mqttPass", "");
   if (RESTORE_OUTPUT) ssrDorit = prefs.getBool("out", false);
 
   prefs.end();
@@ -223,15 +242,14 @@ void loadIdentity() {
   buildTopics();
   strncpy(wmHost, mqttHost.c_str(), sizeof(wmHost) - 1);
   snprintf(wmPort, sizeof(wmPort), "%d", mqttPort);
+  strncpy(wmUser, mqttUser.c_str(), sizeof(wmUser) - 1);
+  strncpy(wmPass, mqttPass.c_str(), sizeof(wmPass) - 1);
 
-  // PROVISIONING (once, on the Pi): create the broker account for this device:
-  //   sudo mosquitto_passwd /etc/mosquitto/passwd <deviceId>
-  // and use the secret below as its password.
   Serial.println(F("=== DEVICE IDENTITY ==="));
-  Serial.println("deviceId (MQTT user) : " + deviceId);
-  Serial.println("secret (MQTT pass)   : " + deviceSecret);
+  Serial.println("deviceId (topic id)  : " + deviceId);
   Serial.println("pairing code         : " + pairingCode);
-  Serial.println("MQTT broker          : " + mqttHost + ":" + String(mqttPort));
+  Serial.println("MQTT broker          : " + mqttHost + ":" + String(mqttPort) + " (TLS)");
+  Serial.println("MQTT user            : " + (mqttUser.length() ? mqttUser : String("(not set - enter in portal)")));
   Serial.println(F("======================="));
 }
 
@@ -398,13 +416,19 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
 
 void mqttConnect() {
   if (mqtt.connected()) return;
+  if (mqttUser.length() == 0) {       // no cloud credentials yet -> don't spin
+    Serial.println(F("MQTT: no broker user set (enter it in the WiFi portal)"));
+    netConnected = false;
+    return;
+  }
   Serial.print(F("MQTT connecting... "));
 
+  // clientId = deviceId (unique per board). Auth = the cloud broker account.
   // LWT: if we vanish, the broker publishes retained "offline" for us.
   bool ok = mqtt.connect(
     deviceId.c_str(),
-    deviceId.c_str(),                 // MQTT user = deviceId
-    deviceSecret.c_str(),             // MQTT pass = device secret
+    mqttUser.c_str(),                 // cloud broker username
+    mqttPass.c_str(),                 // cloud broker password
     tStatus.c_str(), 1, true, "offline");
 
   if (!ok) { Serial.print(F("failed, rc=")); Serial.println(mqtt.state()); netConnected = false; return; }
@@ -423,13 +447,17 @@ void mqttConnect() {
 // core 1 - that is the whole point of the "works with or without network" claim.
 
 void networkTask(void* arg) {
-  // Captive portal "Stabilizator-Setup": WiFi + broker IP/port. Blocks THIS task
-  // only (up to 180 s); core 1 keeps regulating the whole time.
+  // Captive portal "Stabilizator-Setup": WiFi + cloud broker host/port/user/pass.
+  // Blocks THIS task only (up to 180 s); core 1 keeps regulating the whole time.
   WiFiManager wm;
-  WiFiManagerParameter pHost("host", "Raspberry Pi IP (MQTT)", wmHost, sizeof(wmHost));
-  WiFiManagerParameter pPort("port", "MQTT port", wmPort, sizeof(wmPort));
+  WiFiManagerParameter pHost("host", "MQTT broker host", wmHost, sizeof(wmHost));
+  WiFiManagerParameter pPort("port", "MQTT port (TLS 8883)", wmPort, sizeof(wmPort));
+  WiFiManagerParameter pUser("user", "MQTT username", wmUser, sizeof(wmUser));
+  WiFiManagerParameter pPass("pass", "MQTT password", wmPass, sizeof(wmPass));
   wm.addParameter(&pHost);
   wm.addParameter(&pPort);
+  wm.addParameter(&pUser);
+  wm.addParameter(&pPass);
   wm.setSaveConfigCallback(wmSaveCallback);
   wm.setConfigPortalTimeout(180);
 
@@ -438,20 +466,25 @@ void networkTask(void* arg) {
   if (wmShouldSave) {                       // user (re)entered the broker fields
     mqttHost = pHost.getValue();
     mqttPort = atoi(pPort.getValue());
-    if (mqttPort <= 0) mqttPort = 1883;
+    if (mqttPort <= 0) mqttPort = MQTT_PORT_DEFAULT;
+    mqttUser = pUser.getValue();
+    mqttPass = pPass.getValue();
     xSemaphoreTake(nvsMutex, portMAX_DELAY);
     prefs.begin("stab", false);
     prefs.putString("mqttHost", mqttHost);
     prefs.putInt("mqttPort", mqttPort);
+    prefs.putString("mqttUser", mqttUser);
+    prefs.putString("mqttPass", mqttPass);
     prefs.end();
     xSemaphoreGive(nvsMutex);
-    Serial.println("Saved broker: " + mqttHost + ":" + String(mqttPort));
+    Serial.println("Saved broker: " + mqttHost + ":" + String(mqttPort) + " user=" + mqttUser);
   }
 
   if (!wifiOk) Serial.println(F("WiFi not configured - running offline, will retry"));
 
+  net.setInsecure();                        // skip CA validation (fine for a thesis)
   mqtt.setServer(mqttHost.c_str(), mqttPort);
-  mqtt.setSocketTimeout(2);                 // a dead broker blocks 2 s, not 15
+  mqtt.setSocketTimeout(4);                 // TLS handshake needs a bit longer
   mqtt.setCallback(onMqttMessage);
 
   uint32_t lastMqttAttempt = 0, lastTelemetry = millis(), lastWifiRetry = 0;

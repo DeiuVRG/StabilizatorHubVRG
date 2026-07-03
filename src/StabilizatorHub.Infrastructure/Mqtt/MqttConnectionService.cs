@@ -49,12 +49,20 @@ public sealed class MqttConnectionService : BackgroundService
             return;
         }
 
-        var clientOptions = new MqttClientOptionsBuilder()
+        var optionsBuilder = new MqttClientOptionsBuilder()
             .WithTcpServer(_options.Host, _options.Port)
             .WithCredentials(_options.Username, _options.Password)
             .WithClientId(_options.ClientId)
-            .WithCleanSession()
-            .Build();
+            .WithCleanSession();
+
+        if (_options.UseTls)
+        {
+            // Cloud brokers (HiveMQ Cloud, etc.) present a publicly trusted
+            // certificate, so the default system CA validation is enough.
+            optionsBuilder = optionsBuilder.WithTlsOptions(o => o.UseTls(true));
+        }
+
+        var clientOptions = optionsBuilder.Build();
 
         var reconnectDelay = TimeSpan.FromSeconds(Math.Max(1, _options.ReconnectDelaySeconds));
 
