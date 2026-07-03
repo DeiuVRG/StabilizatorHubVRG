@@ -5,10 +5,12 @@
  *  This firmware keeps the proven local hardware layer (sensors, complementary
  *  LEDC motor drive, SSR, deadband regulation) and adds network connectivity:
  *
- *   - WiFi provisioning: WiFiManager captive portal "Stabilizator-Setup" on the
- *     first boot (or when the saved network is gone). The cloud broker
- *     host/port/username/password are ALSO entered there and kept in NVS, so the
- *     device joins ANY WiFi/hotspot and needs no code change or reflash.
+ *   - WiFi provisioning: WiFiMulti remembers several networks (home router,
+ *     phone hotspot, ...) in NVS and joins whichever is in range. When none is
+ *     reachable, the WiFiManager captive portal "Stabilizator-Setup" opens to
+ *     ADD a network (appended, not overwritten); the 'portal' serial command
+ *     opens it on demand to pre-load one. The cloud broker host/port/user/pass
+ *     are entered there too and kept in NVS - no code change or reflash needed.
  *   - Cloud MQTT over TLS: the ESP and the Raspberry Pi backend both dial OUT to
  *     a cloud broker (HiveMQ Cloud, port 8883). The device therefore works from
  *     anywhere, even on a different network than the Pi - no LAN IPs, no
@@ -63,6 +65,7 @@
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <WiFiMulti.h>         // remember several WiFi networks (home + hotspot + ...)
 #include "esp_mac.h"           // esp_read_mac(): factory MAC without starting WiFi
 #include <WiFiManager.h>
 #include <PubSubClient.h>
@@ -147,6 +150,7 @@ const bool RESTORE_OUTPUT = false;
 
 WiFiClientSecure  net;              // TLS transport for the cloud broker
 PubSubClient      mqtt(net);
+WiFiMulti         wifiMulti;         // picks the strongest saved network in range
 Preferences       prefs;
 Adafruit_SSD1306  display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 bool oledOk = false;
@@ -194,6 +198,15 @@ char wmUser[40] = "";
 char wmPass[64] = "";
 bool wmShouldSave = false;
 void wmSaveCallback() { wmShouldSave = true; }
+
+// Saved WiFi networks (owned by the network task, core 0). The list persists in
+// NVS so the ESP remembers e.g. the home router AND a phone hotspot and joins
+// whichever is in range.
+#define MAX_NETS 5
+String netSsid[MAX_NETS];
+String netPass[MAX_NETS];
+int    netCount = 0;
+volatile bool portalRequested = false;   // set by the 'portal' serial command
 
 // ============================ IDENTITY ============================
 
@@ -452,29 +465,72 @@ void mqttConnect() {
   netConnected = true;
 }
 
-// ============================ NETWORK TASK (core 0) ============================
-// Everything that can block on I/O lives here, OFF the control loop. The captive
-// portal, WiFi (re)connects and MQTT (re)connects never stall the regulation on
-// core 1 - that is the whole point of the "works with or without network" claim.
+// ===================== SAVED WIFI NETWORKS (network task) =====================
 
-void networkTask(void* arg) {
-  // Captive portal "Stabilizator-Setup": WiFi + cloud broker host/port/user/pass.
-  // Blocks THIS task only (up to 180 s); core 1 keeps regulating the whole time.
+void loadNets() {
+  xSemaphoreTake(nvsMutex, portMAX_DELAY);
+  prefs.begin("stab", true);                 // read-only
+  netCount = prefs.getInt("netCount", 0);
+  if (netCount > MAX_NETS) netCount = MAX_NETS;
+  for (int i = 0; i < netCount; i++) {
+    netSsid[i] = prefs.getString(("ssid" + String(i)).c_str(), "");
+    netPass[i] = prefs.getString(("pass" + String(i)).c_str(), "");
+  }
+  prefs.end();
+  xSemaphoreGive(nvsMutex);
+}
+
+void saveNets() {
+  xSemaphoreTake(nvsMutex, portMAX_DELAY);
+  prefs.begin("stab", false);
+  prefs.putInt("netCount", netCount);
+  for (int i = 0; i < netCount; i++) {
+    prefs.putString(("ssid" + String(i)).c_str(), netSsid[i]);
+    prefs.putString(("pass" + String(i)).c_str(), netPass[i]);
+  }
+  prefs.end();
+  xSemaphoreGive(nvsMutex);
+}
+
+// Add a network, or update the password if the SSID is already known. Keeps the
+// newest MAX_NETS, dropping the oldest. (In-memory only; call saveNets after.)
+void addOrUpdateNet(const String& ssid, const String& pass) {
+  if (ssid.length() == 0) return;
+  for (int i = 0; i < netCount; i++) {
+    if (netSsid[i] == ssid) { netPass[i] = pass; return; }
+  }
+  if (netCount < MAX_NETS) {
+    netSsid[netCount] = ssid; netPass[netCount] = pass; netCount++;
+  } else {
+    for (int i = 1; i < MAX_NETS; i++) { netSsid[i - 1] = netSsid[i]; netPass[i - 1] = netPass[i]; }
+    netSsid[MAX_NETS - 1] = ssid; netPass[MAX_NETS - 1] = pass;
+  }
+}
+
+// Open the captive portal to ADD a WiFi network (+ review broker settings). The
+// newly joined network is appended to the saved list. Blocks the network task
+// only (core 1 keeps regulating). Called at boot when nothing is in range, and
+// on demand via the 'portal' serial command.
+void openConfigPortal() {
   WiFiManager wm;
   WiFiManagerParameter pHost("host", "MQTT broker host", wmHost, sizeof(wmHost));
   WiFiManagerParameter pPort("port", "MQTT port (TLS 8883)", wmPort, sizeof(wmPort));
   WiFiManagerParameter pUser("user", "MQTT username", wmUser, sizeof(wmUser));
   WiFiManagerParameter pPass("pass", "MQTT password", wmPass, sizeof(wmPass));
-  wm.addParameter(&pHost);
-  wm.addParameter(&pPort);
-  wm.addParameter(&pUser);
-  wm.addParameter(&pPass);
+  wm.addParameter(&pHost); wm.addParameter(&pPort);
+  wm.addParameter(&pUser); wm.addParameter(&pPass);
   wm.setSaveConfigCallback(wmSaveCallback);
   wm.setConfigPortalTimeout(180);
+  wmShouldSave = false;
 
-  bool wifiOk = wm.autoConnect("Stabilizator-Setup");
+  if (wm.startConfigPortal("Stabilizator-Setup")) {   // returns true once joined
+    addOrUpdateNet(WiFi.SSID(), WiFi.psk());           // remember the new network
+    wifiMulti.addAP(WiFi.SSID().c_str(), WiFi.psk().c_str());
+    saveNets();
+    Serial.println("Added/updated WiFi: " + WiFi.SSID() + " (" + String(netCount) + " saved)");
+  }
 
-  if (wmShouldSave) {                       // user (re)entered the broker fields
+  if (wmShouldSave) {                                 // broker fields (re)entered
     mqttHost = pHost.getValue();
     mqttPort = atoi(pPort.getValue());
     if (mqttPort <= 0) mqttPort = MQTT_PORT_DEFAULT;
@@ -488,7 +544,44 @@ void networkTask(void* arg) {
     prefs.putString("mqttPass", mqttPass);
     prefs.end();
     xSemaphoreGive(nvsMutex);
+    mqtt.setServer(mqttHost.c_str(), mqttPort);
     Serial.println("Saved broker: " + mqttHost + ":" + String(mqttPort) + " user=" + mqttUser);
+  }
+}
+
+// ============================ NETWORK TASK (core 0) ============================
+// Everything that can block on I/O lives here, OFF the control loop. The captive
+// portal, WiFi (re)connects and MQTT (re)connects never stall the regulation on
+// core 1 - that is the whole point of the "works with or without network" claim.
+
+void networkTask(void* arg) {
+  // Load every saved network and let WiFiMulti pick the strongest in range.
+  loadNets();
+  for (int i = 0; i < netCount; i++) wifiMulti.addAP(netSsid[i].c_str(), netPass[i].c_str());
+
+  bool wifiOk = false;
+  if (netCount > 0) {
+    Serial.printf("Trying %d saved WiFi network(s)...\n", netCount);
+    for (int a = 0; a < 2 && !wifiOk; a++) wifiOk = (wifiMulti.run(15000) == WL_CONNECTED);
+  } else {
+    // First boot after an update: migrate the single credential the old
+    // firmware stored, so the current network need not be re-entered.
+    WiFi.begin();
+    for (int i = 0; i < 20 && WiFi.status() != WL_CONNECTED; i++) vTaskDelay(pdMS_TO_TICKS(500));
+    if (WiFi.status() == WL_CONNECTED) {
+      addOrUpdateNet(WiFi.SSID(), WiFi.psk());
+      wifiMulti.addAP(WiFi.SSID().c_str(), WiFi.psk().c_str());
+      saveNets();
+      wifiOk = true;
+      Serial.println("Migrated existing WiFi: " + WiFi.SSID());
+    }
+  }
+
+  // No saved network in range (or none saved yet) -> portal to ADD one.
+  if (!wifiOk) {
+    Serial.println(F("No known WiFi in range - opening portal to add one"));
+    openConfigPortal();
+    wifiOk = (WiFi.status() == WL_CONNECTED);
   }
 
   if (!wifiOk) Serial.println(F("WiFi not configured - running offline, will retry"));
@@ -501,9 +594,15 @@ void networkTask(void* arg) {
   uint32_t lastMqttAttempt = 0, lastTelemetry = millis(), lastWifiRetry = 0;
 
   for (;;) {
+    if (portalRequested) {                  // 'portal' serial command -> add a network
+      portalRequested = false;
+      openConfigPortal();
+    }
+
     if (WiFi.status() != WL_CONNECTED) {
       netConnected = false;
-      if (millis() - lastWifiRetry > 5000) { lastWifiRetry = millis(); WiFi.reconnect(); }
+      // wifiMulti.run() reconnects to ANY known network in range (home/hotspot).
+      if (millis() - lastWifiRetry > 5000) { lastWifiRetry = millis(); wifiMulti.run(); }
     } else if (!mqtt.connected()) {
       netConnected = false;
       if (millis() - lastMqttAttempt > 3000) { lastMqttAttempt = millis(); mqttConnect(); }
@@ -540,16 +639,17 @@ void printHelp() {
   Serial.println(F("  up/down/stop (manual) | <0..100> (manual)"));
   Serial.println(F("  out_on / out_off  (output relay / SSR)"));
   Serial.println(F("  in <V> | out <V> | cur <A>  (calibration)"));
-  Serial.println(F("  net   (network/MQTT info) | show"));
+  Serial.println(F("  net (network/MQTT info) | portal (add a WiFi network) | show"));
   Serial.printf ("  TARGET=%.0fV | CAL_VIN=%.4f CAL_VOUT=%.4f CAL_I=%.4f | mode=%s | SSR=%s\n",
                  TINTA, CAL_VIN, CAL_VOUT, CAL_I, autoMode ? "AUTO" : "MANUAL", ssrDorit ? "ON" : "OFF");
   Serial.println(F("=============================="));
 }
 
 void printNet() {
-  Serial.printf("WiFi: %s (%s, RSSI %d)  MQTT: %s @ %s:%d\n",
+  Serial.printf("WiFi: %s '%s' (%s, RSSI %d) | %d saved  MQTT: %s @ %s:%d\n",
                 WiFi.isConnected() ? "OK" : "...",
-                WiFi.localIP().toString().c_str(), WiFi.RSSI(),
+                WiFi.SSID().c_str(),
+                WiFi.localIP().toString().c_str(), WiFi.RSSI(), netCount,
                 netConnected ? "connected" : "down",
                 mqttHost.c_str(), mqttPort);
   xSemaphoreTake(pairMutex, portMAX_DELAY);
@@ -567,6 +667,7 @@ void handleSerial() {
       if (buf.length() == 0) {}
       else if (buf == "show" || buf == "?") printHelp();
       else if (buf == "net") printNet();
+      else if (buf == "portal") { portalRequested = true; Serial.println(F(">> opening WiFi portal to add a network (connect to 'Stabilizator-Setup')")); }
       else if (buf == "auto")   { autoMode = true;  Serial.println(F(">> AUTO")); }
       else if (buf == "manual") { autoMode = false; manualActiv = false; motorStop(); Serial.println(F(">> MANUAL (stop)")); }
       else if (buf == "up")   { if (autoMode) Serial.println(F(">> in AUTO; type 'manual'")); else { manualActiv = true; manualStart = millis(); motorMove(100); Serial.println(F(">> UP 100%")); } }
