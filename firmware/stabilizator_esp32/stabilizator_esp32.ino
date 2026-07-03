@@ -63,6 +63,7 @@
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include "esp_mac.h"           // esp_read_mac(): factory MAC without starting WiFi
 #include <WiFiManager.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
@@ -221,8 +222,14 @@ void buildTopics() {
 void loadIdentity() {
   prefs.begin("stab", false);
 
-  deviceId = WiFi.macAddress();
-  deviceId.replace(":", "");
+  // Read the factory STA MAC from eFuse - reliable BEFORE WiFi is started
+  // (WiFi.macAddress() returns 00:00:.. until the driver is up).
+  uint8_t mac[6];
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  char macStr[13];
+  snprintf(macStr, sizeof(macStr), "%02X%02X%02X%02X%02X%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  deviceId = String(macStr);
 
   deviceSecret = prefs.getString("secret", "");
   if (deviceSecret == "") { deviceSecret = randomHex(32); prefs.putString("secret", deviceSecret); }
