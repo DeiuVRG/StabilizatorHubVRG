@@ -54,6 +54,12 @@ public sealed class DeviceRegistryService : IDeviceRegistryService
 
         if (!online)
         {
+            // An offline device cannot have its output energized, and the
+            // firmware always boots with the SSR OFF (safe default). Reset the
+            // stored state so the UI toggle shows OFF the moment the device
+            // drops - it no longer stays stuck on a stale "on" until the next
+            // telemetry frame confirms it.
+            device.OutputOn = false;
             await CloseOpenVoltageEventAsync(device, ct);
         }
 

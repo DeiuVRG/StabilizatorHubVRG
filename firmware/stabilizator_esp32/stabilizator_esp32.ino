@@ -448,6 +448,7 @@ void mqttConnect() {
   publishInfo();
   mqtt.subscribe(tCommand.c_str(), 1);
   mqtt.subscribe(tClaimed.c_str(), 1);
+  publishTelemetry();               // instant fresh state (incl. out=0 after boot)
   netConnected = true;
 }
 
