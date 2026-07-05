@@ -15,7 +15,8 @@
  *     a cloud broker (HiveMQ Cloud, port 8883). The device therefore works from
  *     anywhere, even on a different network than the Pi - no LAN IPs, no
  *     port-forwarding. clientId = MAC; auth = the shared cloud broker account.
- *   - Telemetry every 60 s, remote on/off, "online"/"offline" presence via LWT.
+ *   - Telemetry every 10 s (live UI); the backend still stores ~1 point/minute.
+ *     Remote on/off, "online"/"offline" presence via LWT.
  *   - Device identity = WiFi MAC (used in the topic tree and as clientId). The
  *     pairing code is generated once and stored in NVS (flash).
  *   - Claiming: while unclaimed the pairing code is shown on the OLED (it
@@ -45,7 +46,7 @@
  *
  *  MQTT contract (must match the backend):
  *    stabilizator/{MAC}/telemetrie -> {"vin":228,"vout":230,"i":3.10,"p":713,
- *                                      "e":12.40,"out":1,"fw":"2.0.0"}   (60 s)
+ *                                      "e":12.40,"out":1,"fw":"2.0.0"}   (10 s)
  *    stabilizator/{MAC}/status     -> "online"/"offline"   (retained, LWT)
  *    stabilizator/{MAC}/info       -> {"pair":"7F3K9Q","fw":"2.0.0"} (retained)
  *    stabilizator/{MAC}/comanda    <- {"output":"on"|"off"}   (SSR remote)
@@ -141,7 +142,8 @@ const uint32_t MAX_RUN_MS    = 30000UL;  // stall guard: max continuous run
 const uint32_t BOOT_GRACE_MS = 1500UL;   // sensors settle, motor off
 const uint32_t MANUAL_MAX_MS = 15000UL;  // manual command auto-stop
 const uint32_t FEREASTRA_US  = 60000UL;  // RMS window (60 ms = 3 cycles @50 Hz)
-const uint32_t T_TELEMETRY_MS = 60000UL; // telemetry every 60 s
+const uint32_t T_TELEMETRY_MS = 10000UL; // publish every 10 s -> snappy live UI
+                                         // (backend still STORES only ~1/min)
 const uint32_t T_OLED_MS     = 500UL;    // OLED refresh
 
 // Restore SSR state from NVS after a power cut. false = output OFF after boot.
