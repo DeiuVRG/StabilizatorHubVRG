@@ -119,6 +119,7 @@ const int PWM_MAX  = (1 << PWM_RES) - 1;
 float CAL_VIN  = 0.4120f;  // V per ADC-count RMS, input   ('in <V>')
 float CAL_VOUT = 0.4727f;  // V per ADC-count RMS, output  ('out <V>')
 float CAL_I    = 0.0500f;  // A per ADC-count RMS, current ('cur <A>')
+float CAL_I_ZERO = 0.0f;   // no-load ADC-count RMS baseline ('cur_zero'), subtracted in quadrature
 const float I_NOISE_FLOOR = 0.05f; // [A] below this report 0 (sensor noise)
 
 // --- Regulation (target +/- 1 V) ---
@@ -255,9 +256,10 @@ void loadIdentity() {
   mqttPort  = prefs.getInt("mqttPort", MQTT_PORT_DEFAULT);
   mqttUser  = prefs.getString("mqttUser", "");
   mqttPass  = prefs.getString("mqttPass", "");
-  CAL_VIN   = prefs.getFloat("calVin",  CAL_VIN);   // persisted calibration
-  CAL_VOUT  = prefs.getFloat("calVout", CAL_VOUT);  // (falls back to the
-  CAL_I     = prefs.getFloat("calI",    CAL_I);     //  compile-time defaults)
+  CAL_VIN    = prefs.getFloat("calVin",  CAL_VIN);   // persisted calibration
+  CAL_VOUT   = prefs.getFloat("calVout", CAL_VOUT);  // (falls back to the
+  CAL_I      = prefs.getFloat("calI",    CAL_I);     //  compile-time defaults)
+  CAL_I_ZERO = prefs.getFloat("calIz",   CAL_I_ZERO);
   if (RESTORE_OUTPUT) ssrDorit = prefs.getBool("out", false);
 
   prefs.end();
@@ -368,7 +370,12 @@ void readSensors() {
   vinFilt  = (vinFilt == 0)  ? vin  : 0.7f * vinFilt  + 0.3f * vin;
   voutFilt = (voutFilt == 0) ? vout : 0.7f * voutFilt + 0.3f * vout;
 
-  iLoad = adcI * CAL_I;
+  // Subtract the no-load noise floor in quadrature (noise and signal add as
+  // variances): I_real = sqrt(measured^2 - noise^2). Kills the phantom current
+  // an oversized 20 A Hall sensor shows on a small load / noisy supply.
+  float adcI2 = adcI * adcI - CAL_I_ZERO * CAL_I_ZERO;
+  float adcIcorr = (adcI2 > 0) ? sqrtf(adcI2) : 0.0f;
+  iLoad = adcIcorr * CAL_I;
   if (iLoad < I_NOISE_FLOOR) iLoad = 0;
   powerW = voutFilt * iLoad;   // apparent power [VA ~ W resistive]
 }
@@ -628,6 +635,7 @@ void saveCalibration() {
   prefs.putFloat("calVin",  CAL_VIN);
   prefs.putFloat("calVout", CAL_VOUT);
   prefs.putFloat("calI",    CAL_I);
+  prefs.putFloat("calIz",   CAL_I_ZERO);
   prefs.end();
   xSemaphoreGive(nvsMutex);
 }
@@ -638,7 +646,7 @@ void printHelp() {
   Serial.println(F("  auto / manual"));
   Serial.println(F("  up/down/stop (manual) | <0..100> (manual)"));
   Serial.println(F("  out_on / out_off  (output relay / SSR)"));
-  Serial.println(F("  in <V> | out <V> | cur <A>  (calibration)"));
+  Serial.println(F("  in <V> | out <V> | cur_zero (no load) | cur <A> (calibration)"));
   Serial.println(F("  net (network/MQTT info) | portal (add a WiFi network) | show"));
   Serial.printf ("  TARGET=%.0fV | CAL_VIN=%.4f CAL_VOUT=%.4f CAL_I=%.4f | mode=%s | SSR=%s\n",
                  TINTA, CAL_VIN, CAL_VOUT, CAL_I, autoMode ? "AUTO" : "MANUAL", ssrDorit ? "ON" : "OFF");
@@ -675,13 +683,14 @@ void handleSerial() {
       else if (buf == "stop") { manualActiv = false; motorStop(); Serial.println(F(">> STOP")); }
       else if (buf == "out_on")  { setOutputDorit(true);  Serial.println(F(">> SSR: ON (output energized)")); }
       else if (buf == "out_off") { setOutputDorit(false); Serial.println(F(">> SSR: OFF (output de-energized)")); }
+      else if (buf == "cur_zero") { CAL_I_ZERO = adcIloadRms_last; saveCalibration(); Serial.printf(">> CAL_I_ZERO=%.2f (no-load noise saved) -> I should read ~0 now\n", CAL_I_ZERO); }
       else {
         int sp = buf.indexOf(' ');
         if (sp > 0) {
           String cmd = buf.substring(0, sp); float v = buf.substring(sp + 1).toFloat();
           if (cmd == "in")  { if (adcInRms_last < 5) Serial.println(F(">> IN too low.")); else if (v <= 0) Serial.println(F(">> invalid.")); else { CAL_VIN = v / adcInRms_last; saveCalibration(); Serial.printf(">> CAL_VIN=%.4f (saved)\n", CAL_VIN); } }
           else if (cmd == "out") { if (adcOutRms_last < 5) Serial.println(F(">> OUT too low.")); else if (v <= 0) Serial.println(F(">> invalid.")); else { CAL_VOUT = v / adcOutRms_last; saveCalibration(); Serial.printf(">> CAL_VOUT=%.4f (saved)\n", CAL_VOUT); } }
-          else if (cmd == "cur") { if (adcIloadRms_last < 2) Serial.println(F(">> I too low (apply a load).")); else if (v <= 0) Serial.println(F(">> invalid.")); else { CAL_I = v / adcIloadRms_last; saveCalibration(); Serial.printf(">> CAL_I=%.4f (saved)\n", CAL_I); } }
+          else if (cmd == "cur") { float z2 = adcIloadRms_last*adcIloadRms_last - CAL_I_ZERO*CAL_I_ZERO; float adcIc = (z2>0)?sqrtf(z2):0.0f; if (adcIc < 2) Serial.println(F(">> I too low (apply a bigger load / run cur_zero first).")); else if (v <= 0) Serial.println(F(">> invalid.")); else { CAL_I = v / adcIc; saveCalibration(); Serial.printf(">> CAL_I=%.4f (saved)\n", CAL_I); } }
           else Serial.println(F(">> unknown. 'show'."));
         } else if (isDigit(buf[0])) {
           if (autoMode) Serial.println(F(">> in AUTO; type 'manual'"));
