@@ -650,8 +650,10 @@ void printHelp() {
   Serial.println(F("  out_on / out_off  (output relay / SSR)"));
   Serial.println(F("  in <V> | out <V> | cur_zero (no load) | cur <A> (calibration)"));
   Serial.println(F("  net (network/MQTT info) | portal (add a WiFi network) | show"));
-  Serial.printf ("  TARGET=%.0fV | CAL_VIN=%.4f CAL_VOUT=%.4f CAL_I=%.4f | mode=%s | SSR=%s\n",
-                 TINTA, CAL_VIN, CAL_VOUT, CAL_I, autoMode ? "AUTO" : "MANUAL", ssrDorit ? "ON" : "OFF");
+  Serial.printf ("  TARGET=%.0fV | CAL_VIN=%.4f CAL_VOUT=%.4f CAL_I=%.4f CAL_I_ZERO=%.2f | mode=%s | SSR=%s\n",
+                 TINTA, CAL_VIN, CAL_VOUT, CAL_I, CAL_I_ZERO, autoMode ? "AUTO" : "MANUAL", ssrDorit ? "ON" : "OFF");
+  Serial.printf ("  raw ADC RMS [counts]: in=%.1f out=%.1f iload=%.1f (iload raw vs zero-baseline is the current-cal debug)\n",
+                 adcInRms_last, adcOutRms_last, adcIloadRms_last);
   Serial.println(F("=============================="));
 }
 
