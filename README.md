@@ -5,7 +5,7 @@
 Proiect de licență — Universitatea Politehnica Timișoara, Facultatea de Automatică
 și Calculatoare, specializarea Automatică și Informatică Aplicată (AIA).
 
-**Autor:** Rusu Andrei-Ioan · **Coordonator:** as. dr. ing. Camil-Vasile Jichici
+**Autor:** Rusu Andrei-Ioan · **Coordonator:** As. dr. ing. Camil-Vasile Jichici
 
 **🔗 Aplicația live:** https://app.licenta-stabilizator-vrg.org
 
